@@ -1,0 +1,208 @@
+# Q-CONSENSUS Agent Configuration Specification
+# Version: 1.0
+
+agent_system:
+  total_agents: 10 # Fixed for all experiments in this study
+  agent_type: "quantum_single_qubit"
+
+  heterogeneity_strategy: "parameter_variation"
+  # Options:
+  #   - "identical": All agents have same circuit and parameters
+  #   - "parameter_variation": Same circuit, different parameters (RECOMMENDED)
+  #   - "architecture_variation": Different circuits per agent (complex)
+
+  heterogeneity_rationale: |
+    Parameter variation creates diverse agent perspectives while
+    maintaining implementation simplicity and reproducibility.
+    Uniform angular spacing ensures symmetric bias distribution.
+
+  independence_assumption: true
+  # If true: agents make decisions independently (no entanglement)
+  # If false: specify entanglement structure below
+
+quantum_implementation:
+  qubits_per_agent: 1 # Recommended: 1 for binary decisions
+  circuit_type: "parameterized_rotation"
+
+  gate_set:
+    - "RY" # Y-axis rotation (main parameterization)
+    - "RZ" # Z-axis rotation (optional phase control)
+    # Single-qubit gates only for independent agents
+
+  max_circuit_depth: 3 # Maximum number of gates per agent
+  # Depth 3 allows: Initialize -> RY -> RZ -> Measure
+
+  parameterization:
+    type: "bias_angles"
+    parameter_count: 2 # [theta, phi] per agent
+
+    parameter_ranges:
+      theta: [0.0, 3.14159] # 0 to π (full range of RY rotation)
+      phi: [0.0, 6.28318] # 0 to 2π (full range of RZ rotation)
+
+    environment_coupling:
+      enabled: true
+      strategy: "linear_scaling"
+      formula: |
+        θᵢ(env) = θᵢ_base + α * env_param
+        where α = coupling strength (to be tuned)
+
+  measurement:
+    basis: "computational" # Z-basis measurement {|0⟩, |1⟩}
+    # Options: computational, hadamard, custom
+
+    shots_per_agent: 1000 # Default/initial value
+    # Will be swept in experiments: [100, 500, 1000, 5000, 10000]
+
+    output_format: "probability"
+    # Each agent outputs p̂ᵢ = P(measure |1⟩)
+
+agent_heterogeneity_detail:
+  strategy_name: "uniform_angular_spacing"
+
+  parameter_assignment:
+    method: "deterministic"
+    formula: |
+      For agent i ∈ {0, 1, ..., N-1}:
+
+      θᵢ = (i / N) * π
+      φᵢ = (i / N) * 2π
+
+      This creates N agents uniformly distributed across
+      the decision space (from bias toward 0 to bias toward 1).
+
+  diversity_metrics:
+    - name: "angular_diversity"
+      formula: "std([θ₀, θ₁, ..., θₙ₋₁])"
+      expected_value: "~π/(2√N)"
+
+    - name: "pairwise_distinguishability"
+      formula: "min_i≠j |θᵢ - θⱼ|"
+      expected_value: "π/N"
+
+  rationale: |
+    Uniform spacing ensures:
+    1. No cluster bias (no subset of agents dominates)
+    2. Reproducible configuration (deterministic assignment)
+    3. Symmetric coverage of decision space
+    4. Easy to reason about mathematically
+
+    Alternative strategies (not used):
+    - Random parameter assignment (not reproducible)
+    - Clustered agents (introduces bias)
+    - Adaptive parameters (violates static assumption)
+
+entanglement_configuration:
+  enabled: false # Phase 1: Start with independent agents
+
+  # Future phases may explore:
+  topology: null
+  # Options: "pairwise", "chain", "star", "fully_connected"
+
+  entanglement_gates: null
+  # Options: ["CNOT", "CZ", "SWAP"]
+
+  entanglement_depth: null
+  # Number of entangling layers
+
+  rationale_for_disabled: |
+    Entanglement introduces:
+    1. Circuit complexity (harder to analyze)
+    2. Simulation overhead (exponential scaling)
+    3. Statistical dependencies (violates independence assumption)
+
+    Phase 1 focuses on independent agents to establish baseline.
+    Phase 6+ may explore entangled agents if time permits.
+
+measurement_strategy:
+  shot_count_range:
+    min: 100
+    max: 10000
+    sweep_values: [100, 500, 1000, 5000, 10000]
+
+  repetitions_per_configuration: 100
+  # Each (θ_env, K) pair run 100 times for statistical confidence
+
+  seed_control: "deterministic"
+  seed_strategy: |
+    For reproducibility, quantum simulator uses fixed seed:
+    seed = base_seed + trial_number
+
+    Where base_seed = hash(config_file) % 2^32
+
+  statistical_requirements:
+    min_shots_for_stability: 1000
+    # Below this, variance too high for reliable estimates
+
+    confidence_interval: 0.95
+    # Target 95% CI for probability estimates
+
+circuit_validation:
+  checks_to_perform:
+    - "circuit_depth <= max_circuit_depth"
+    - "all gates in allowed gate_set"
+    - "qubit_count == qubits_per_agent"
+    - "measurement basis is computational"
+    - "parameters in valid ranges"
+
+  initialization:
+    method: "ground_state"
+    state: "|0⟩ for all qubits"
+    # No superposition initialization (starts from |0⟩)
+
+performance_estimates:
+  single_agent_simulation_time:
+    K_100: "~10 ms"
+    K_1000: "~50 ms"
+    K_10000: "~500 ms"
+
+  full_system_time_per_trial:
+    formula: "N × K × t_shot + t_aggregation"
+    example_N10_K1000: "~500 ms per trial"
+
+  total_experimental_time:
+    # 11 θ values × 5 K values × 100 reps × 500ms
+    estimated: "~8 hours for full sweep"
+
+    scaling_note: |
+      Time scales linearly with N and K.
+      No parallelization assumed (sequential execution).
+      GPU acceleration not available in Qiskit Aer basic simulator.
+
+resource_constraints:
+  max_agents: 50
+  # Beyond this, simulation becomes impractical on single CPU
+
+  max_shots_per_agent: 100000
+  # Above this, diminishing returns on variance reduction
+
+  max_qubits_total: 50
+  # Total across all agents (for entangled systems)
+  # Single qubit per agent × 50 agents = 50 qubits max
+
+implementation_notes:
+  circuit_construction:
+    - "Use Qiskit QuantumCircuit class"
+    - "Parameterize with Parameter objects for environment coupling"
+    - "Transpile to basis gates before execution"
+
+  execution:
+    - "Use Qiskit Aer QasmSimulator (CPU-based)"
+    - "Set seed explicitly for each simulation"
+    - "Record full measurement statistics (not just probabilities)"
+
+  data_collection:
+    - "Store raw counts: {0: count_0, 1: count_1}"
+    - "Compute probability estimates: p̂ = count_1 / total"
+    - "Store standard error: σ = √(p̂(1-p̂)/K)"
+    - "Archive all intermediate results for post-hoc analysis"
+
+  revision_history:
+    - version: "1.0"
+      date: null
+      changes: "Initial configuration specification"
+
+  dependencies:
+    qiskit_version: ">=1.0.0"
+    numpy_version: ">=1.26.0"
+    python_version: ">=3.11"

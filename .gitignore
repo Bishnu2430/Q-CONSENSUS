@@ -1,0 +1,28 @@
+# Conda / Python
+qc_env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Logs & temp
+*.log
+*.tmp
+
+# NOT ignored
+!environment.yml
+
+docs/*
+!docs/.gitkeep
