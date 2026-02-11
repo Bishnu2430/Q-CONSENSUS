@@ -1,0 +1,253 @@
+# Q-CONSENSUS Blockchain Observability Configuration
+# Version: 1.0
+
+blockchain_observability:
+  enabled: true # Set to false to disable blockchain logging
+
+  description: |
+    Blockchain-based immutable logging system for tracking all agent
+    reasoning, measurements, and decisions throughout experiments.
+    Provides cryptographic verification of experimental integrity.
+
+implementation:
+  type: "custom_python" # Options: custom_python, hyperledger, ethereum_private
+
+  hash_algorithm: "sha256" # Cryptographic hash function
+
+  storage:
+    output_directory: "experiments/blockchain_logs"
+    file_naming_pattern: "experiment_{timestamp}.blockchain"
+    file_format: "json" # Human-readable and parsable
+    compression: false # Set to true for large experiments (uses gzip)
+    max_file_size_mb: 100 # Split into multiple files if exceeded
+
+validation:
+  validate_on_add: false # Validate chain integrity after each block (slow)
+  validate_every_n_blocks: 100 # Periodic validation (balance performance/integrity)
+  validate_on_export: true # Always validate before saving
+
+  integrity_checks:
+    - "hash_verification" # Verify each block's hash
+    - "chain_linkage" # Verify previous_hash references
+    - "sequential_indices" # Verify block numbers sequential
+    - "timestamp_ordering" # Verify timestamps increasing
+
+logging_events:
+  # Which events to log to blockchain
+
+  environment_state:
+    enabled: true
+    include_fields:
+      - "trial_id"
+      - "theta" # Environment parameter
+      - "timestamp"
+
+  agent_circuit:
+    enabled: true
+    include_fields:
+      - "trial_id"
+      - "agent_id"
+      - "circuit_params" # Dict of theta, phi, etc.
+      - "circuit_depth"
+      - "gate_sequence" # Optional: ["RY", "RZ"]
+      - "timestamp"
+
+  agent_measurement:
+    enabled: true
+    include_fields:
+      - "trial_id"
+      - "agent_id"
+      - "shots"
+      - "counts" # Dict: {"0": count_0, "1": count_1}
+      - "probability_estimate"
+      - "standard_error"
+      - "timestamp"
+
+  coordination:
+    enabled: true
+    include_fields:
+      - "trial_id"
+      - "aggregation_function"
+      - "agent_probabilities" # List of all p̂ᵢ values
+      - "aggregate_value" # Result of aggregation
+      - "threshold"
+      - "timestamp"
+
+  final_decision:
+    enabled: true
+    include_fields:
+      - "trial_id"
+      - "decision" # Final D ∈ {0, 1}
+      - "stability" # If computed
+      - "variance" # If computed
+      - "cost" # N × K
+      - "timestamp"
+
+  metadata:
+    enabled: true
+    include_in_genesis_block: true
+    fields:
+      - "experiment_name"
+      - "config_file_hash" # SHA-256 of configuration YAML
+      - "python_version"
+      - "qiskit_version"
+      - "numpy_version"
+      - "random_seed"
+      - "system_info" # OS, CPU, etc.
+      - "researcher_id"
+
+performance:
+  buffering:
+    enabled: true
+    buffer_size: 100 # Add blocks to memory buffer, flush periodically
+    flush_every_n_blocks: 100
+    flush_on_trial_end: true
+
+  async_writing:
+    enabled: false # Write to disk asynchronously (advanced)
+    # Recommendation: Keep false for Phase 1 (simpler, safer)
+
+  indexing:
+    create_trial_index: true # Fast lookup by trial_id
+    create_event_index: true # Fast lookup by event_type
+
+query_capabilities:
+  # Features for analyzing blockchain after experiments
+
+  enabled: true
+
+  query_types:
+    - "get_blocks_by_trial_id"
+    - "get_blocks_by_event_type"
+    - "get_blocks_by_agent_id"
+    - "get_blocks_in_time_range"
+
+  export_formats:
+    - "json" # Native format
+    - "csv" # For statistical analysis
+    - "pandas" # Python DataFrame
+
+reproducibility:
+  include_in_blocks:
+    configuration_snapshot: true # Full config in genesis block
+    random_seeds: true # All PRNG seeds
+    environment_info: true # OS, Python version, library versions
+
+  verification_metadata:
+    researcher_signature: null # Optional: digital signature
+    institution: null # Optional: research institution
+    project_id: "Q-CONSENSUS"
+    experiment_date: null # Auto-filled
+
+audit_trail:
+  purpose: |
+    Provide complete, tamper-evident record of experimental execution
+    for peer review, reproducibility verification, and scientific integrity.
+
+  what_is_logged:
+    - "Every environment state broadcast"
+    - "Every agent quantum circuit execution"
+    - "Every measurement outcome"
+    - "Every coordination aggregation"
+    - "Every final decision"
+
+  what_is_NOT_logged:
+    - "Internal Python variables"
+    - "Intermediate computation steps (unless explicitly added)"
+    - "Debug print statements"
+    - "Performance profiling data (use separate profiler)"
+
+visualization:
+  # Optional: Generate visual representations of blockchain
+
+  enabled: false # Set true if you want visualizations
+
+  graph_types:
+    - "block_chain_graph" # Visual of linked blocks
+    - "trial_timeline" # Events over time
+    - "agent_decision_tree" # Per-agent reasoning paths
+
+integration:
+  # How blockchain integrates with experiment code
+
+  integration_points:
+    - location: "After environment broadcast"
+      action: "Log environment_state event"
+
+    - location: "After each agent circuit execution"
+      action: "Log agent_circuit event"
+
+    - location: "After each agent measurement"
+      action: "Log agent_measurement event"
+
+    - location: "After coordination"
+      action: "Log coordination event"
+
+    - location: "After final decision"
+      action: "Log final_decision event"
+
+  code_pattern: |
+    # Example integration
+    from src.blockchain import Blockchain
+
+    blockchain = Blockchain(config=blockchain_config)
+
+    # In experiment loop
+    blockchain.add_block({
+        "event_type": "agent_measurement",
+        "trial_id": current_trial,
+        "agent_id": i,
+        "data": measurement_results
+    })
+
+verification_protocol:
+  # How to verify blockchain integrity
+
+  steps:
+    1: "Load blockchain from file"
+    2: "Verify genesis block matches configuration"
+    3: "Validate hash chain (all blocks)"
+    4: "Check timestamp ordering"
+    5: "Verify block indices sequential"
+    6: "Check data completeness (all expected events present)"
+
+  acceptance_criteria:
+    - "All hash verifications pass"
+    - "Chain linkage intact"
+    - "No missing blocks"
+    - "Timestamps monotonically increasing"
+
+research_benefits:
+  - benefit: "Peer Review Verification"
+    description: "Reviewers can verify experiments ran as claimed"
+
+  - benefit: "Reproducibility Guarantee"
+    description: "Complete audit trail enables exact reproduction"
+
+  - benefit: "Scientific Integrity"
+    description: "Cryptographic proof against data tampering"
+
+  - benefit: "Debugging Support"
+    description: "Trace back through decision chain to find errors"
+
+  - benefit: "Publication Enhancement"
+    description: "Include blockchain hash for verifiable results"
+
+limitations:
+  - "Single-node blockchain (not distributed)"
+  - "No consensus mechanism (single writer)"
+  - "No smart contracts (not needed)"
+  - "Local storage only (not public)"
+  - "Append-only (no chain reorganization)"
+
+estimated_overhead:
+  storage: "~38.5 MB for 5,500 trials (N=10 agents)"
+  computation: "<0.5% of total experiment time"
+  io_operations: "Negligible (append-only writes)"
+
+  conclusion: "Minimal overhead, significant research value"
+
+  revision_history:
+    - version: "1.0"
+      date: null
+      changes: "Initial blockchain observability specification"
