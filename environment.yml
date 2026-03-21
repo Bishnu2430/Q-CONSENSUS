@@ -10,3 +10,5 @@ dependencies:
   - pip
   - pip:
       - qiskit==1.0.1
+      - qiskit-aer
+      - pytest
