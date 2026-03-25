@@ -21,8 +21,15 @@ Thumbs.db
 *.log
 *.tmp
 
+# Runtime data
+data/
+
+# Test caches
+.pytest_cache/
+
+# Local env files
+.env
+.env.*
+
 # NOT ignored
 !environment.yml
-
-docs/*
-!docs/.gitkeep
