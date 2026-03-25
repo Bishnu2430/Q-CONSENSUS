@@ -1,0 +1,7 @@
+# Place GGUF model files here.
+
+# Example: Qwen2.5-3B-Instruct-Q4_K_M.gguf
+
+# For testing, you can download a small quantized model from Hugging Face:
+
+# https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF

@@ -1,0 +1,64 @@
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: qconsensus-orchestrator
+    env_file:
+      - .env
+    depends_on:
+      - blockchain
+      - postgres
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/events:/app/data/events
+      - ./config:/app/config:ro
+
+  # llama:
+  #   image: ghcr.io/ggerganov/llama.cpp:server
+  #   container_name: qconsensus-llama
+  #   command:
+  #     - "-m"
+  #     - "/models/${LLAMA_MODEL_FILE}"
+  #     - "--host"
+  #     - "0.0.0.0"
+  #     - "--port"
+  #     - "8080"
+  #     - "-ngl"
+  #     - "0"
+  #     - "-c"
+  #     - "4096"
+  #     - "--threads"
+  #     - "4"
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - ./models:/models:ro
+
+  blockchain:
+    build:
+      context: ./blockchain
+      dockerfile: geth.Dockerfile
+    container_name: qconsensus-blockchain
+    ports:
+      - "8545:8545"
+    volumes:
+      - gethdata:/data
+      - ./blockchain/init-geth.sh:/usr/local/bin/init-geth.sh
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: qconsensus-postgres
+    environment:
+      POSTGRES_DB: qconsensus
+      POSTGRES_USER: qconsensus
+      POSTGRES_PASSWORD: qconsensus
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+  gethdata:

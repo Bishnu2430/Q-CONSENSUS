@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -87,6 +89,8 @@ class JsonlEventStore:
     def __init__(self, base_dir: str):
         self.base_dir = base_dir
         os.makedirs(self.base_dir, exist_ok=True)
+        self._subscribers: Dict[str, list[queue.Queue[Event]]] = {}
+        self._sub_lock = threading.Lock()
 
     def _path(self, run_id: str) -> str:
         return os.path.join(self.base_dir, f"{run_id}.jsonl")
@@ -96,6 +100,15 @@ class JsonlEventStore:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(event.to_dict(), ensure_ascii=False))
             f.write("\n")
+
+        with self._sub_lock:
+            subs = list(self._subscribers.get(event.run_id, []))
+        for q in subs:
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                # Drop if subscriber is lagging; the client can recover via /api/events.
+                pass
 
     def iter_events(self, run_id: str) -> Iterator[Event]:
         path = self._path(run_id)
@@ -121,6 +134,19 @@ class JsonlEventStore:
         for last in self.iter_events(run_id):
             pass
         return last.event_hash if last else None
+
+    def subscribe(self, run_id: str, *, max_queue_size: int = 256) -> queue.Queue[Event]:
+        q: queue.Queue[Event] = queue.Queue(maxsize=max_queue_size)
+        with self._sub_lock:
+            self._subscribers.setdefault(run_id, []).append(q)
+        return q
+
+    def unsubscribe(self, run_id: str, q: queue.Queue[Event]) -> None:
+        with self._sub_lock:
+            subs = self._subscribers.get(run_id, [])
+            self._subscribers[run_id] = [s for s in subs if s is not q]
+            if not self._subscribers[run_id]:
+                self._subscribers.pop(run_id, None)
 
 
 def compute_run_commitment(event_hashes: Iterable[str]) -> str:
