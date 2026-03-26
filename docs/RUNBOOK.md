@@ -22,6 +22,22 @@ uvicorn src.qconsensus.web:app --reload --port 8000
 
 ## 2. Docker stack setup
 
+### One-command startup (recommended)
+
+```bash
+./scripts/start_demo.sh
+```
+
+What it does:
+
+- Starts docker services (`orchestrator`, `llama`, `blockchain`, `postgres`)
+- Waits for API and blockchain readiness
+- If `CONTRACT_ANCHOR_ENABLED=true` and `ANCHOR_CONTRACT_ADDRESS` is empty, deploys anchor contract and writes address to `.env`
+- Recreates orchestrator service to pick up the new contract address
+- Opens the interface at `http://localhost:8000`
+
+Manual steps (optional) are below.
+
 1. Copy environment file:
 
 ```bash
@@ -111,8 +127,8 @@ All baseline/selection decisions are written as events.
 
 - Event store: `data/events/*.jsonl`
 - Artifact store: `data/artifacts/`
-- On-chain anchoring via `ETH_*` environment variables
-- Preferred anchoring mode uses contract settings (`CONTRACT_ANCHOR_ENABLED`, `ANCHOR_CONTRACT_ADDRESS`)
+- On-chain anchoring uses contract settings (`CONTRACT_ANCHOR_ENABLED`, `ANCHOR_CONTRACT_ADDRESS`)
+- RPC/key/chain parameters are read from `ETH_*` environment variables
 - Current blockchain container uses private Geth clique PoA network (chain id 1337)
 
 ### Deploy/verify commitment contract
@@ -141,7 +157,7 @@ curl -s -X POST http://localhost:8000/api/run \
   -d '{"query":"status check"}'
 ```
 
-2. Use returned `run_id` + `commitment` to anchor and verify with `ContractAnchoringClient`.
+2. Use returned `run_id` + `commitment` and check `/api/verify/{run_id}`.
 
 3. Wait for tx receipt before verifying storage read.
 

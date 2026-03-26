@@ -17,7 +17,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ## 1) Orchestrator + debate MVP
 
-- [~] FastAPI app exists
+- [x] FastAPI app exists
 - [x] Add SSE live event stream endpoint
 - [x] Add cross-critique round
 - [x] Add self-revision round
@@ -46,7 +46,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 - [x] Docker compose: blockchain container (geth clique)
 - [x] Dev account creation + prefund
-- [x] Anchoring MVP (tx data) + preferred contract-based anchoring
+- [x] Contract-based anchoring integrated in orchestrator path
 - [x] Verifier tool checks chain + on-chain anchor
 
 ---
@@ -65,3 +65,4 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 - [x] One-command startup
 - [x] UI shows input/status/debate/reasoning
 - [x] End-to-end run is anchored + verifiable
+- [x] Start script boots stack, deploys contract (if needed), and opens UI

@@ -114,8 +114,12 @@ class ContractAnchoringClient:
 
     def anchor_commitment(self, *, run_id: str, commitment: str, contract_address: str) -> str:
         """Anchor a commitment to the contract."""
-        run_id_bytes = run_id.encode("utf-8")[:32]
-        commitment_bytes = bytes.fromhex(commitment.lstrip("0x"))[:32]
+        run_id_bytes = Web3.keccak(text=run_id)
+
+        raw_commitment = bytes.fromhex(commitment.lstrip("0x"))
+        if len(raw_commitment) != 32:
+            raise ValueError("commitment must be exactly 32 bytes (sha256 hex)")
+        commitment_bytes = raw_commitment
 
         contract = self.w3.eth.contract(address=contract_address, abi=self.contract_abi)
 
@@ -138,7 +142,7 @@ class ContractAnchoringClient:
 
     def verify_commitment(self, *, run_id: str, contract_address: str) -> Optional[str]:
         """Verify a commitment was anchored on-chain."""
-        run_id_bytes = run_id.encode("utf-8")[:32]
+        run_id_bytes = Web3.keccak(text=run_id)
         contract = self.w3.eth.contract(address=contract_address, abi=self.contract_abi)
 
         try:

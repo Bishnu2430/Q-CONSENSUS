@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Optional
 
-from .events import Event, JsonlEventStore
+from .events import JsonlEventStore
 from .llm_client import LlamaCppClient
-from .types import DebateMessage
 
 
 class ReplayConfig:
@@ -27,6 +26,7 @@ class DebateReplayer:
     def replay(self, *, run_id: str, config: Optional[ReplayConfig] = None) -> dict:
         """Replay a run from its event log."""
         config = config or ReplayConfig()
+        _ = config
 
         events = list(self.event_store.iter_events(run_id))
         if not events:
@@ -63,6 +63,9 @@ class DebateReplayer:
             elif ev.event_type == "quantum_randomness":
                 payload = ev.payload
                 replay_result["quantum_decisions"]["randomness"] = {
+                    "seed_used": payload.get("seed_used"),
+                    "quantum_bits": payload.get("quantum_bits"),
+                    "classical_bits": payload.get("classical_bits"),
                     "quantum_order": payload.get("quantum_order"),
                     "classical_order": payload.get("classical_order"),
                     "selected_order": payload.get("selected_order"),
@@ -74,6 +77,8 @@ class DebateReplayer:
                 replay_result["quantum_decisions"]["scheduling"] = {
                     "quantum_scores": payload.get("quantum_scores"),
                     "classical_scores": payload.get("classical_scores"),
+                    "selected_scores": payload.get("selected_scores"),
+                    "selected_order": payload.get("selected_order"),
                     "selected_policy": payload.get("selected_policy"),
                 }
 
@@ -93,5 +98,22 @@ class DebateReplayer:
                 replay_result["quantum_baseline"] = payload.get("quantum_baseline_answer")
                 replay_result["classical_baseline"] = payload.get("classical_baseline_answer")
                 replay_result["selected_policy"] = payload.get("selected_policy")
+
+            elif ev.event_type == "run_committed":
+                replay_result["commitment"] = ev.payload.get("commitment")
+                replay_result["anchor_tx_hash"] = ev.payload.get("anchor_tx_hash")
+                replay_result["anchor_contract_address"] = ev.payload.get("anchor_contract_address")
+                replay_result["anchor_error"] = ev.payload.get("anchor_error")
+
+            # Backward compatibility with older event naming.
+            elif ev.event_type == "quantum_weights":
+                payload = ev.payload
+                replay_result["consensus"] = {
+                    "angles": payload.get("angles"),
+                    "quantum_weights": payload.get("weights"),
+                    "classical_weights": payload.get("classical_weights"),
+                    "selected_weights": payload.get("weights"),
+                    "selected_policy": payload.get("selected_policy", "quantum"),
+                }
 
         return replay_result
