@@ -25,7 +25,8 @@ from .types import AgentSpec, DebateConfig, QuantumPolicyConfig
 
 class RunRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
-    max_rounds: int = Field(default=3, ge=1, le=3)
+    max_rounds: int = Field(default=2, ge=1, le=3)
+    agent_count: int = Field(default=3, ge=2, le=10)
     use_quantum_randomness: bool = True
     use_quantum_weights: bool = True
     use_quantum_scheduling: bool = True
@@ -123,8 +124,9 @@ def _load_agents_from_yaml(path: str) -> List[AgentSpec]:
 
 
 def _build_config(req: RunRequest, agents: List[AgentSpec]) -> DebateConfig:
+    selected_agents = agents[: max(1, min(req.agent_count, len(agents)))]
     return DebateConfig(
-        agents=agents,
+        agents=selected_agents,
         max_rounds=req.max_rounds,
         quantum=QuantumPolicyConfig(
             use_quantum_randomness=req.use_quantum_randomness,
@@ -145,11 +147,11 @@ def create_app() -> FastAPI:
 
     contract_init_error: str | None = None
     try:
-      contract_client = ContractAnchoringClient.from_env()
+        contract_client = ContractAnchoringClient.from_env()
     except Exception as exc:  # pragma: no cover - startup resilience
-      # Do not fail app startup if blockchain is temporarily unavailable.
-      contract_client = None
-      contract_init_error = str(exc)
+        # Do not fail app startup if blockchain is temporarily unavailable.
+        contract_client = None
+        contract_init_error = str(exc)
     anchor_contract_address = os.getenv("ANCHOR_CONTRACT_ADDRESS")
 
     agents_path = os.getenv("AGENTS_CONFIG_PATH", os.path.join("config", "agents.yaml"))
@@ -168,6 +170,27 @@ def create_app() -> FastAPI:
         contract_anchorer=contract_client,
         anchor_contract_address=anchor_contract_address,
     )
+
+    def _refresh_anchor_client() -> None:
+      nonlocal contract_client, contract_init_error, verifier, orch
+      if contract_client is not None:
+        return
+      try:
+        maybe_client = ContractAnchoringClient.from_env()
+      except Exception as exc:  # pragma: no cover - best effort retry
+        contract_init_error = str(exc)
+        return
+
+      contract_client = maybe_client
+      contract_init_error = None
+      verifier = ChainVerifier(anchor_client=contract_client, event_store=store)
+      orch = DebateOrchestrator(
+        event_store=store,
+        llm=llm,
+        quantum_executor=qexec,
+        contract_anchorer=contract_client,
+        anchor_contract_address=anchor_contract_address,
+      )
 
     def _record_metrics(run_id: str, cfg: DebateConfig, total_messages: int) -> None:
         metrics.record_run(
@@ -229,13 +252,13 @@ def create_app() -> FastAPI:
   <link href='https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap' rel='stylesheet'>
   <style>
     :root {
-      --bg-1: #f5f1e7;
-      --bg-2: #e5ecf4;
-      --ink: #162030;
-      --accent: #a41f2f;
-      --accent-2: #0f8b8d;
-      --card: rgba(255, 255, 255, 0.74);
-      --border: rgba(22, 32, 48, 0.16);
+      --bg-1: #f7efe4;
+      --bg-2: #dce8f4;
+      --ink: #152334;
+      --accent: #b72c1c;
+      --accent-2: #137d85;
+      --card: rgba(255, 255, 255, 0.8);
+      --border: rgba(21, 35, 52, 0.16);
       --mono: 'IBM Plex Mono', monospace;
       --sans: 'Space Grotesk', sans-serif;
     }
@@ -245,43 +268,131 @@ def create_app() -> FastAPI:
       font-family: var(--sans);
       color: var(--ink);
       background:
-        radial-gradient(circle at 20% 10%, rgba(164,31,47,.22), transparent 45%),
-        radial-gradient(circle at 80% 90%, rgba(15,139,141,.20), transparent 38%),
+        radial-gradient(circle at 10% 0%, rgba(183,44,28,.24), transparent 34%),
+        radial-gradient(circle at 90% 100%, rgba(19,125,133,.26), transparent 40%),
         linear-gradient(130deg, var(--bg-1), var(--bg-2));
-      animation: breathe 14s ease-in-out infinite alternate;
     }
-    @keyframes breathe { from { background-position: 0% 0%, 100% 100%, 0 0; } to { background-position: 10% 5%, 90% 95%, 0 0; } }
-    .shell { max-width: 1300px; margin: 0 auto; padding: 16px; min-height: 100%; display: grid; gap: 12px; }
+    .shell { max-width: 1650px; margin: 0 auto; padding: 16px; display: grid; gap: 12px; min-height: 100%; }
     .topbar {
-      display: flex; justify-content: space-between; align-items: center;
-      background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px 16px;
       backdrop-filter: blur(6px);
     }
-    .brand { font-weight: 700; letter-spacing: .03em; }
+    .brand { font-weight: 700; font-size: 26px; letter-spacing: .03em; }
     .sub { font-family: var(--mono); font-size: 12px; opacity: .75; }
-    .grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 12px; }
-    .pane {
-      background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 12px;
-      backdrop-filter: blur(6px); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
-      transform: translateY(10px); opacity: 0; animation: rise .35s ease forwards;
+    .pill { border-radius: 999px; border: 1px solid var(--border); padding: 5px 12px; font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,.68); }
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      grid-template-rows: minmax(300px, 36vh) minmax(340px, 1fr);
+      gap: 12px;
     }
-    .pane:nth-child(2) { animation-delay: .08s; }
-    .pane:nth-child(3) { animation-delay: .16s; }
-    .pane:nth-child(4) { animation-delay: .24s; }
-    @keyframes rise { to { transform: translateY(0); opacity: 1; } }
-    .title { font-weight: 700; margin-bottom: 8px; }
+    .pane {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+      display: grid;
+      gap: 10px;
+      min-height: 0;
+    }
+    .title { font-weight: 700; }
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    textarea { width: 100%; min-height: 130px; border-radius: 10px; border: 1px solid var(--border); padding: 10px; font-family: var(--mono); resize: vertical; }
-    .pill { border-radius: 999px; border: 1px solid var(--border); padding: 4px 10px; font-family: var(--mono); font-size: 12px; background: rgba(255,255,255,.58); }
-    button { border: 0; border-radius: 10px; padding: 10px 14px; font-weight: 700; color: #fff; background: linear-gradient(115deg, var(--accent), #d35400); cursor: pointer; }
-    button.secondary { background: linear-gradient(115deg, #27566b, var(--accent-2)); }
-    .chat { display: flex; flex-direction: column; gap: 10px; max-height: 58vh; overflow: auto; }
-    .msg { border-radius: 10px; padding: 8px 10px; border: 1px solid var(--border); background: rgba(255,255,255,.78); }
-    .meta { font-size: 12px; font-family: var(--mono); opacity: 0.75; margin-bottom: 4px; }
-    pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: var(--mono); }
-    .controls { display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)); gap: 8px; margin: 10px 0; }
+    textarea {
+      width: 100%;
+      min-height: 150px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      padding: 10px;
+      font-family: var(--mono);
+      resize: vertical;
+      background: rgba(255,255,255,.7);
+    }
+    .controls { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px; }
     .toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } .chat { max-height: 42vh; } }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-weight: 700;
+      color: #fff;
+      background: linear-gradient(115deg, var(--accent), #d35400);
+      cursor: pointer;
+    }
+    button.secondary { background: linear-gradient(115deg, #1d5e82, var(--accent-2)); }
+    .chat {
+      display: grid;
+      gap: 8px;
+      overflow: auto;
+      align-content: start;
+      min-height: 220px;
+    }
+    .msg {
+      border-radius: 10px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.84);
+    }
+    .meta { font-size: 12px; font-family: var(--mono); opacity: .8; margin-bottom: 4px; }
+    pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: var(--mono); }
+    .status-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .stat-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(255,255,255,.75);
+    }
+    .stat-name { font-size: 12px; font-family: var(--mono); opacity: .8; }
+    .stat-value { font-size: 21px; font-weight: 700; }
+    .meter {
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(21, 35, 52, 0.12);
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .meter > span {
+      display: block;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #0f9f87, #e67e22);
+      width: 0%;
+      transition: width 200ms ease;
+    }
+    .status-note {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      font-size: 13px;
+      background: rgba(255,255,255,.72);
+      overflow: auto;
+      font-family: var(--mono);
+    }
+    .bad { color: #8f1d1d; }
+    .good { color: #0a7c41; }
+    .reason {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(255,255,255,.78);
+      min-height: 200px;
+      overflow: auto;
+    }
+    @media (max-width: 1180px) {
+      .grid { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto; }
+      .status-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -301,34 +412,84 @@ def create_app() -> FastAPI:
           <label class='toggle'><input id='qRand' type='checkbox' checked /> quantum randomness</label>
           <label class='toggle'><input id='qWeight' type='checkbox' checked /> quantum weights</label>
           <label class='toggle'><input id='qSched' type='checkbox' checked /> quantum scheduling</label>
+          <label class='toggle'>agents <input id='agentCount' type='number' min='2' max='5' value='3' style='width:56px' /></label>
         </div>
         <div class='row'>
           <button onclick='runDebate()'>Run debate</button>
           <button class='secondary' onclick='runDebateAsync()'>Run async + stream</button>
         </div>
       </div>
+
       <div class='pane' id='statusPane'>
         <div class='title'>System status</div>
-        <pre id='status'></pre>
+        <div class='status-grid'>
+          <div class='stat-card'>
+            <div class='stat-name'>CPU usage</div>
+            <div class='stat-value'><span id='cpuValue'>0</span>%</div>
+            <div class='meter'><span id='cpuMeter'></span></div>
+          </div>
+          <div class='stat-card'>
+            <div class='stat-name'>Memory usage</div>
+            <div class='stat-value'><span id='memValue'>0</span>%</div>
+            <div class='meter'><span id='memMeter'></span></div>
+          </div>
+          <div class='stat-card'>
+            <div class='stat-name'>Agents loaded</div>
+            <div class='stat-value' id='agentsValue'>0</div>
+          </div>
+          <div class='stat-card'>
+            <div class='stat-name'>Anchor status</div>
+            <div class='stat-value' id='anchorValue'>unknown</div>
+          </div>
+        </div>
+        <div class='status-note' id='statusNote'>waiting for status...</div>
       </div>
+
       <div class='pane' id='debatePane'>
         <div class='title'>Debate stream</div>
         <div class='chat' id='chat'></div>
       </div>
+
       <div class='pane' id='reasonPane'>
         <div class='title'>Reasoning / Validation</div>
-        <pre id='final'></pre>
+        <div class='reason'><pre id='final'></pre></div>
       </div>
     </div>
   </div>
 
 <script>
 let currentEventSource = null;
+let currentPollTimer = null;
+const seenEventIds = new Set();
+let respondedCount = 0;
+
+function escapeHtml(s) {
+  return (s || '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+}
+
+function clampPct(n) {
+  if (Number.isNaN(n)) return 0;
+  return Math.max(0, Math.min(100, n));
+}
 
 async function refreshStatus() {
   const r = await fetch('/api/status');
   const j = await r.json();
-  document.getElementById('status').textContent = JSON.stringify(j, null, 2);
+
+  const cpu = clampPct(Number(j.cpu_percent || 0));
+  const mem = clampPct(Number(j.mem_percent || 0));
+  document.getElementById('cpuValue').textContent = cpu.toFixed(1);
+  document.getElementById('memValue').textContent = mem.toFixed(1);
+  document.getElementById('cpuMeter').style.width = `${cpu}%`;
+  document.getElementById('memMeter').style.width = `${mem}%`;
+  document.getElementById('agentsValue').textContent = String(j.agents_loaded || 0);
+
+  const anchorEnabled = !!j.contract_anchor_enabled;
+  document.getElementById('anchorValue').textContent = anchorEnabled ? 'ready' : 'degraded';
+  document.getElementById('anchorValue').className = anchorEnabled ? 'good' : 'bad';
+  document.getElementById('statusNote').textContent =
+    j.contract_anchor_init_error ||
+    `config=${j.agents_config_path || 'n/a'} · mem=${Math.round((j.mem_used || 0) / 1048576)} MiB`;
 }
 setInterval(refreshStatus, 1500);
 refreshStatus();
@@ -336,16 +497,13 @@ refreshStatus();
 function appendMsg(agent, content) {
   const el = document.createElement('div');
   el.className = 'msg';
-  el.innerHTML = `<div class='meta'>${agent}</div><pre>${escapeHtml(content)}</pre>`;
+  el.innerHTML = `<div class='meta'>${escapeHtml(agent)}</div><pre>${escapeHtml(content)}</pre>`;
   document.getElementById('chat').appendChild(el);
+  document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
 }
 
 function addSystemMsg(content) {
   appendMsg('system', content);
-}
-
-function escapeHtml(s) {
-  return (s || '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 }
 
 function requestBody() {
@@ -354,8 +512,83 @@ function requestBody() {
     use_quantum_randomness: document.getElementById('qRand').checked,
     use_quantum_weights: document.getElementById('qWeight').checked,
     use_quantum_scheduling: document.getElementById('qSched').checked,
-    max_rounds: 3,
+    max_rounds: 2,
+    agent_count: Number(document.getElementById('agentCount').value || 3),
   };
+}
+
+function renderEvent(e) {
+  if (!e || !e.event_type) return;
+  if (e.event_id && seenEventIds.has(e.event_id)) return;
+  if (e.event_id) seenEventIds.add(e.event_id);
+
+  const p = e.payload || {};
+  if (e.event_type === 'agent_prompted') {
+    const name = p.display_name || p.agent_id || 'agent';
+    addSystemMsg(`${name} started round ${p.round_idx}`);
+    if (!document.getElementById('final').textContent.trim()) {
+      document.getElementById('final').textContent = `Run in progress...\nLatest: ${name} started round ${p.round_idx}`;
+    }
+    return;
+  }
+  if (e.event_type === 'agent_responded') {
+    respondedCount += 1;
+    appendMsg(`${p.display_name || p.agent_id || 'agent'} · round ${p.round_idx}`, p.content || '');
+    if (!document.getElementById('final').textContent.includes('Final answer:')) {
+      document.getElementById('final').textContent = `Run in progress...\nAgent responses received: ${respondedCount}`;
+    }
+    return;
+  }
+  if (e.event_type === 'quantum_randomness') {
+    addSystemMsg(`randomness policy=${p.selected_policy} · order=${JSON.stringify(p.selected_order || [])}`);
+    return;
+  }
+  if (e.event_type === 'quantum_scheduling') {
+    addSystemMsg(`scheduling policy=${p.selected_policy}`);
+    return;
+  }
+  if (e.event_type === 'consensus_weights') {
+    addSystemMsg(`consensus weights policy=${p.selected_policy}`);
+    return;
+  }
+  if (e.event_type === 'final_answer') {
+    document.getElementById('final').textContent =
+      `Final answer:\n\n${p.final_answer || ''}\n\nSelected policy: ${p.selected_policy || 'n/a'}\n` +
+      `Quantum baseline:\n${p.quantum_baseline_answer || 'n/a'}\n\nClassical baseline:\n${p.classical_baseline_answer || 'n/a'}`;
+    return;
+  }
+  if (e.event_type === 'run_committed') {
+    addSystemMsg(`run committed · tx=${p.anchor_tx_hash || 'n/a'}`);
+  }
+}
+
+function resetRunUI() {
+  if (currentPollTimer) {
+    clearInterval(currentPollTimer);
+    currentPollTimer = null;
+  }
+  seenEventIds.clear();
+  respondedCount = 0;
+  document.getElementById('chat').innerHTML = '';
+  document.getElementById('final').textContent = '';
+}
+
+async function fetchAndRenderEvents(runId) {
+  const resp = await fetch(`/api/events/${runId}`);
+  if (!resp.ok) return;
+  const events = await resp.json();
+  for (const e of events) {
+    renderEvent(e);
+  }
+}
+
+function startEventPolling(runId) {
+  if (currentPollTimer) {
+    clearInterval(currentPollTimer);
+  }
+  currentPollTimer = setInterval(() => {
+    fetchAndRenderEvents(runId).catch(() => {});
+  }, 1200);
 }
 
 async function runDebate() {
@@ -364,8 +597,7 @@ async function runDebate() {
     currentEventSource = null;
   }
 
-  document.getElementById('chat').innerHTML = '';
-  document.getElementById('final').textContent = '';
+  resetRunUI();
 
   const r = await fetch('/api/run', {
     method: 'POST',
@@ -379,16 +611,14 @@ async function runDebate() {
   }
 
   const j = await r.json();
-  document.getElementById('runInfo').textContent = `run_id=${j.run_id}`;
+  document.getElementById('runInfo').textContent = `run_id=${j.run_id} · completed`;
 
-  const ev = await fetch(`/api/events/${j.run_id}`);
-  const events = await ev.json();
-  for (const e of events) {
-    if (e.event_type === 'agent_responded') {
-      appendMsg(`${e.payload.display_name} · round ${e.payload.round_idx}`, e.payload.content);
-    }
+  await fetchAndRenderEvents(j.run_id);
+
+  if (!document.getElementById('final').textContent.trim()) {
+    document.getElementById('final').textContent =
+      `Final answer:\n\n${j.final_answer}\n\nCommitment: ${j.commitment}\nAnchor tx: ${j.anchor_tx_hash || 'n/a'}`;
   }
-  document.getElementById('final').textContent = `Final answer:\n\n${j.final_answer}\n\nCommitment: ${j.commitment}\nAnchor tx: ${j.anchor_tx_hash || 'n/a'}`;
 }
 
 async function runDebateAsync() {
@@ -397,8 +627,7 @@ async function runDebateAsync() {
     currentEventSource = null;
   }
 
-  document.getElementById('chat').innerHTML = '';
-  document.getElementById('final').textContent = '';
+  resetRunUI();
 
   const r = await fetch('/api/run_async', {
     method: 'POST',
@@ -414,22 +643,24 @@ async function runDebateAsync() {
   const j = await r.json();
   document.getElementById('runInfo').textContent = `run_id=${j.run_id} · ${j.status}`;
   addSystemMsg('stream opened');
+  startEventPolling(j.run_id);
 
   currentEventSource = new EventSource(`/api/stream/${j.run_id}`);
   currentEventSource.onmessage = (evt) => {
-    const e = JSON.parse(evt.data);
-    if (e.event_type === 'agent_responded') {
-      appendMsg(`${e.payload.display_name} · round ${e.payload.round_idx}`, e.payload.content);
-    }
-    if (e.event_type === 'run_committed') {
-      document.getElementById('final').textContent = `Commitment: ${e.payload.commitment}\nAnchor tx: ${e.payload.anchor_tx_hash || 'n/a'}`;
+    try {
+      const e = JSON.parse(evt.data);
+      renderEvent(e);
+    } catch (err) {
+      addSystemMsg(`stream parse warning: ${err}`);
     }
   };
 
   currentEventSource.onerror = () => {
     addSystemMsg('stream disconnected');
-    currentEventSource.close();
-    currentEventSource = null;
+    if (currentEventSource) {
+      currentEventSource.close();
+      currentEventSource = null;
+    }
   };
 
   const poll = async () => {
@@ -437,8 +668,12 @@ async function runDebateAsync() {
     const rj = await rr.json();
     if (rj.status === 'completed' || rj.status === 'failed') {
       document.getElementById('runInfo').textContent = `run_id=${j.run_id} · ${rj.status}`;
-      if (rj.final_answer) {
-        document.getElementById('final').textContent = `Final answer:\n\n${rj.final_answer}\n\nCommitment: ${rj.commitment || 'n/a'}\nAnchor tx: ${rj.anchor_tx_hash || 'n/a'}`;
+      if (rj.status === 'failed') {
+        addSystemMsg(`run failed: ${rj.error || 'unknown error'}`);
+      }
+      if (currentPollTimer) {
+        clearInterval(currentPollTimer);
+        currentPollTimer = null;
       }
       if (currentEventSource) {
         currentEventSource.close();
@@ -456,6 +691,7 @@ async function runDebateAsync() {
 
     @app.get("/api/status")
     def status() -> dict:
+        _refresh_anchor_client()
         vm = psutil.virtual_memory()
         return {
             "cpu_percent": psutil.cpu_percent(interval=0.0),
@@ -465,7 +701,7 @@ async function runDebateAsync() {
             "agents_loaded": len(agents),
             "agents_config_path": agents_path,
             "contract_anchor_enabled": bool(contract_client and anchor_contract_address),
-        "contract_anchor_init_error": contract_init_error,
+            "contract_anchor_init_error": contract_init_error,
         }
 
     @app.post("/api/run", response_model=RunResponse)
@@ -503,7 +739,7 @@ async function runDebateAsync() {
 
     @app.post("/api/replay/{run_id}")
     def replay(run_id: str) -> dict:
-      return replayer.replay(run_id=run_id)
+        return replayer.replay(run_id=run_id)
 
     @app.get("/api/stream/{run_id}")
     def stream(run_id: str) -> StreamingResponse:
@@ -527,43 +763,58 @@ async function runDebateAsync() {
 
     @app.get("/api/result/{run_id}", response_model=RunResultResponse)
     def result(run_id: str) -> RunResultResponse:
-        state = _get_run_state(run_id)
+      state = _get_run_state(run_id)
+      if state and state.get("status") in {"completed", "failed"}:
+        return RunResultResponse(**state)
+
+      events = [e.to_dict() for e in store.iter_events(run_id)]
+      if not events:
         if state:
-            return RunResultResponse(**state)
+          return RunResultResponse(**state)
+        return RunResultResponse(run_id=run_id, status="not_found")
 
-        events = [e.to_dict() for e in store.iter_events(run_id)]
-        if not events:
-            return RunResultResponse(run_id=run_id, status="not_found")
+      final_answer = None
+      commitment = None
+      anchor_tx_hash = None
+      for e in events:
+        if e.get("event_type") == "final_answer":
+          final_answer = e.get("payload", {}).get("final_answer")
+        if e.get("event_type") == "run_committed":
+          commitment = e.get("payload", {}).get("commitment")
+          anchor_tx_hash = e.get("payload", {}).get("anchor_tx_hash")
 
-        final_answer = None
-        commitment = None
-        anchor_tx_hash = None
-        for e in events:
-            if e.get("event_type") == "final_answer":
-                final_answer = e.get("payload", {}).get("final_answer")
-            if e.get("event_type") == "run_committed":
-                commitment = e.get("payload", {}).get("commitment")
-                anchor_tx_hash = e.get("payload", {}).get("anchor_tx_hash")
-
-        return RunResultResponse(
-            run_id=run_id,
-            status="completed" if commitment else "running",
-            final_answer=final_answer,
-            commitment=commitment,
-            anchor_tx_hash=anchor_tx_hash,
+      resolved = RunResultResponse(
+        run_id=run_id,
+        status="completed" if commitment else "running",
+        final_answer=final_answer,
+        commitment=commitment,
+        anchor_tx_hash=anchor_tx_hash,
+      )
+      if resolved.status == "completed":
+        _set_run_state(
+          run_id,
+          {
+            "run_id": run_id,
+            "status": "completed",
+            "final_answer": final_answer,
+            "commitment": commitment,
+            "anchor_tx_hash": anchor_tx_hash,
+          },
         )
+      return resolved
 
     @app.get("/api/verify/{run_id}")
     def verify(run_id: str) -> dict:
+      _refresh_anchor_client()
       if not contract_client:
         return {
           "verified": False,
           "reason": "Contract anchor client is unavailable",
           "details": contract_init_error,
         }
-        if not anchor_contract_address:
-            return {"verified": False, "reason": "ANCHOR_CONTRACT_ADDRESS is not configured"}
-        return verifier.verify_run(run_id=run_id, contract_address=anchor_contract_address)
+      if not anchor_contract_address:
+        return {"verified": False, "reason": "ANCHOR_CONTRACT_ADDRESS is not configured"}
+      return verifier.verify_run(run_id=run_id, contract_address=anchor_contract_address)
 
     @app.get("/api/metrics")
     def metrics_summary() -> dict:

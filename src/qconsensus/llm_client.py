@@ -14,8 +14,10 @@ class LlamaCppClient:
         self.base_url = (base_url or os.getenv("LLM_BASE_URL") or "http://localhost:8080").rstrip("/")
         self.api_key = api_key or os.getenv("LLM_API_KEY")
         self.mock_mode = mock_mode or os.getenv("MOCK_LLM") == "true"
+        self.default_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "160"))
+        self.request_timeout_s = int(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "90"))
 
-    def chat(self, *, messages: List[Dict[str, str]], temperature: float = 0.2, max_tokens: int = 512) -> str:
+    def chat(self, *, messages: List[Dict[str, str]], temperature: float = 0.2, max_tokens: Optional[int] = None) -> str:
         if self.mock_mode:
             return self._mock_response(messages, temperature)
         
@@ -29,9 +31,9 @@ class LlamaCppClient:
                 "model": "local-model",
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": max_tokens,
+                "max_tokens": max_tokens if max_tokens is not None else self.default_max_tokens,
             }
-            resp = requests.post(url, headers=headers, json=payload, timeout=300)
+            resp = requests.post(url, headers=headers, json=payload, timeout=self.request_timeout_s)
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"]
