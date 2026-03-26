@@ -7,34 +7,35 @@ services:
     env_file:
       - .env
     depends_on:
+      - llama
       - blockchain
       - postgres
     ports:
       - "8000:8000"
     volumes:
-      - ./data/events:/app/data/events
+      - ./data:/app/data
       - ./config:/app/config:ro
 
-  # llama:
-  #   image: ghcr.io/ggerganov/llama.cpp:server
-  #   container_name: qconsensus-llama
-  #   command:
-  #     - "-m"
-  #     - "/models/${LLAMA_MODEL_FILE}"
-  #     - "--host"
-  #     - "0.0.0.0"
-  #     - "--port"
-  #     - "8080"
-  #     - "-ngl"
-  #     - "0"
-  #     - "-c"
-  #     - "4096"
-  #     - "--threads"
-  #     - "4"
-  #   ports:
-  #     - "8080:8080"
-  #   volumes:
-  #     - ./models:/models:ro
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: qconsensus-llama
+    command:
+      - "-m"
+      - "/models/${LLAMA_MODEL_FILE}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "-ngl"
+      - "0"
+      - "-c"
+      - "4096"
+      - "--threads"
+      - "4"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
 
   blockchain:
     build:

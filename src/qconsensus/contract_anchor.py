@@ -98,7 +98,7 @@ class ContractAnchoringClient:
         tx = {
             "nonce": nonce,
             "gasPrice": self.w3.eth.gas_price,
-            "gas": 500000,
+            "gas": 3000000,
             "chainId": self.config.chain_id,
             "data": ANCHOR_CONTRACT_BYTECODE,
         }
@@ -106,6 +106,9 @@ class ContractAnchoringClient:
         signed = self.w3.eth.account.sign_transaction(tx, private_key=self.config.private_key)
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        if receipt.status != 1 or not receipt.contractAddress:
+            raise RuntimeError(f"Contract deployment failed, tx={tx_hash.hex()}")
 
         return receipt.contractAddress
 

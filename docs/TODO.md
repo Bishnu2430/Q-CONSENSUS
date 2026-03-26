@@ -63,5 +63,5 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 ## 6) Demo readiness
 
 - [x] One-command startup
-- [ ] UI shows input/status/debate/reasoning
-- [ ] End-to-end run is anchored + verifiable
+- [x] UI shows input/status/debate/reasoning
+- [x] End-to-end run is anchored + verifiable

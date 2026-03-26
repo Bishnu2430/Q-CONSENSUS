@@ -6,6 +6,28 @@ This file is a single source of truth to resume work after switching machines/OS
 
 ---
 
+## Latest verified state (2026-03-25)
+
+- Docker stack is up and healthy:
+  - API: `http://localhost:8000`
+  - llama.cpp: `http://localhost:8080`
+  - geth RPC: `http://localhost:8545`
+- Real inference verified (`MOCK_LLM=false`) using local GGUF model:
+  - `models/Qwen2.5-3B-Instruct-Q4_K_M.gguf`
+- Contract anchoring configured in `.env`:
+  - `CONTRACT_ANCHOR_ENABLED=true`
+  - `ANCHOR_CONTRACT_ADDRESS=0x5FC8d32690cc91D4c39d9d3abcBD16989F875707`
+- End-to-end anchor verification completed for run:
+  - `run_id=b3b7c625-4cde-43a2-8106-6eb5a9e582ce`
+  - commitment matched on-chain after tx confirmation
+- Persistence is enabled via volumes/binds:
+  - `./data:/app/data`
+  - `./models:/models`
+  - `pgdata` (postgres)
+  - `gethdata` (chain state)
+
+---
+
 ## What we decided
 
 - Target OS/workflow: **Ubuntu** (dual boot). (WSL2 Ubuntu also acceptable.)

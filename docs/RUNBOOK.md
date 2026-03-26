@@ -40,13 +40,21 @@ Recommended starter model:
 docker compose up --build -d
 ```
 
-4. Stop stack:
+4. Confirm services are healthy:
+
+```bash
+docker compose ps
+curl -s http://localhost:8080/health
+curl -s http://localhost:8000/api/status
+```
+
+5. Stop stack:
 
 ```bash
 docker compose down
 ```
 
-5. Rebuild from scratch:
+6. Rebuild from scratch:
 
 ```bash
 docker compose down
@@ -54,12 +62,25 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-6. Services:
+7. Services:
 
 - Orchestrator API/UI: http://localhost:8000
 - llama.cpp server: http://localhost:8080
 - Blockchain RPC (Geth clique): http://localhost:8545
 - Postgres: localhost:5432
+
+8. Verify real LLM inference (non-mock):
+
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model":"Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+    "messages":[{"role":"user","content":"Reply with: ok"}],
+    "max_tokens":8,
+    "temperature":0
+  }'
+```
 
 ## 3. Agent spawning
 
@@ -93,6 +114,53 @@ All baseline/selection decisions are written as events.
 - On-chain anchoring via `ETH_*` environment variables
 - Preferred anchoring mode uses contract settings (`CONTRACT_ANCHOR_ENABLED`, `ANCHOR_CONTRACT_ADDRESS`)
 - Current blockchain container uses private Geth clique PoA network (chain id 1337)
+
+### Deploy/verify commitment contract
+
+Use the helper script to deploy a compatible contract to local geth:
+
+```bash
+uv pip install --python .venv/bin/python py-solc-x
+.venv/bin/python scripts/deploy_contract.py
+```
+
+Then set `.env`:
+
+```dotenv
+CONTRACT_ANCHOR_ENABLED=true
+ANCHOR_CONTRACT_ADDRESS=<printed address>
+```
+
+### End-to-end contract anchor verification
+
+1. Run debate:
+
+```bash
+curl -s -X POST http://localhost:8000/api/run \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"status check"}'
+```
+
+2. Use returned `run_id` + `commitment` to anchor and verify with `ContractAnchoringClient`.
+
+3. Wait for tx receipt before verifying storage read.
+
+### Persistence and Docker volumes
+
+Current compose configuration persists data across container recreate/rebuild:
+
+- `./data:/app/data` keeps events/artifacts on host
+- `./models:/models` keeps GGUF models on host
+- `pgdata` named volume keeps Postgres data
+- `gethdata` named volume keeps chain state/account data
+
+If you want a fresh blockchain genesis, remove only geth volume:
+
+```bash
+docker compose down
+docker volume rm q-consensus_gethdata
+docker compose up -d --build blockchain
+```
 
 ## 7. API endpoints
 
