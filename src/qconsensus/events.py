@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import threading
@@ -108,7 +109,10 @@ class JsonlEventStore:
                 q.put_nowait(event)
             except queue.Full:
                 # Drop if subscriber is lagging; the client can recover via /api/events.
-                pass
+                logging.warning(
+                    f"[QUEUE_OVERFLOW] run_id={event.run_id} event_type={event.event_type} "
+                    f"queue_size=2048 - subscriber lagging, events may be lost"
+                )
 
     def iter_events(self, run_id: str) -> Iterator[Event]:
         path = self._path(run_id)
@@ -135,7 +139,7 @@ class JsonlEventStore:
             pass
         return last.event_hash if last else None
 
-    def subscribe(self, run_id: str, *, max_queue_size: int = 256) -> queue.Queue[Event]:
+    def subscribe(self, run_id: str, *, max_queue_size: int = 2048) -> queue.Queue[Event]:
         q: queue.Queue[Event] = queue.Queue(maxsize=max_queue_size)
         with self._sub_lock:
             self._subscribers.setdefault(run_id, []).append(q)

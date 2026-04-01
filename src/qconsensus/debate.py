@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Dict, List, Optional
 
@@ -17,6 +18,8 @@ from .quantum import (
 )
 from .quantum_executor import QuantumExecutor
 from .types import DebateConfig, DebateMessage, DebateResult
+from .web_context import fetch_web_context
+
 
 
 class DebateOrchestrator:
@@ -54,7 +57,16 @@ class DebateOrchestrator:
         scored.sort(key=lambda t: t[0], reverse=True)
         return scored[0][1] if scored else ""
 
-    def run(self, *, user_query: str, config: DebateConfig, run_id: Optional[str] = None) -> DebateResult:
+    def run(
+        self,
+        *,
+        user_query: str,
+        config: DebateConfig,
+        run_id: Optional[str] = None,
+        enable_web_context: bool = False,
+        web_context_query: Optional[str] = None,
+        web_context_max_items: int = 3,
+    ) -> DebateResult:
         run_id = run_id or str(uuid.uuid4())
 
         prev_hash = self.event_store.get_tail_hash(run_id)
@@ -64,6 +76,53 @@ class DebateOrchestrator:
             payload={"query": user_query},
             prev_hash=prev_hash,
         )
+
+        effective_query = user_query
+        if enable_web_context:
+            prev_hash = self._persist_event(
+                run_id=run_id,
+                event_type="web_fetch_started",
+                payload={"query": web_context_query or user_query},
+                prev_hash=prev_hash,
+            )
+            
+            web_start_time = time.time()
+            lookup_query = (web_context_query or user_query).strip()
+            context_items = fetch_web_context(lookup_query, max_items=web_context_max_items)
+            web_duration_ms = int((time.time() - web_start_time) * 1000)
+            
+            if context_items:
+                context_text = "\n".join(
+                    [f"- {item.get('snippet', '')} (source: {item.get('url', '')})" for item in context_items]
+                )
+                effective_query = (
+                    f"{user_query}\n\nExternal context (use as supportive evidence, validate internally):\n{context_text}"
+                )
+
+            prev_hash = self._persist_event(
+                run_id=run_id,
+                event_type="web_fetch_completed",
+                payload={
+                    "query": lookup_query,
+                    "items_count": len(context_items),
+                    "duration_ms": web_duration_ms,
+                    "items": context_items,
+                },
+                prev_hash=prev_hash,
+            )
+            
+            prev_hash = self._persist_event(
+                run_id=run_id,
+                event_type="web_context_enriched",
+                payload={
+                    "enabled": True,
+                    "lookup_query": lookup_query,
+                    "items_count": len(context_items),
+                    "items": context_items,
+                },
+                prev_hash=prev_hash,
+            )
+
 
         seed = self.quantum_executor.current_seed
         n_agents = len(config.agents)
@@ -117,7 +176,7 @@ class DebateOrchestrator:
         revised_answers: Dict[str, str] = {}
 
         # Round 0: initial answers
-        agent_prompts = build_agent_prompts(user_query=user_query, agents=config.agents)
+        agent_prompts = build_agent_prompts(user_query=effective_query, agents=config.agents)
 
         for idx in selected_order:
             agent = config.agents[idx]
@@ -135,8 +194,43 @@ class DebateOrchestrator:
                 prev_hash=prev_hash,
             )
 
-            content = self.llm.chat(messages=prompt_msgs)
-            initial_answers[agent.agent_id] = content
+            prev_hash = self._persist_event(
+                run_id=run_id,
+                event_type="llm_processing_started",
+                payload={"agent_id": agent.agent_id, "round_idx": 0},
+                prev_hash=prev_hash,
+            )
+            
+            try:
+                llm_start_time = time.time()
+                content = self.llm.chat(messages=prompt_msgs)
+                llm_duration_ms = int((time.time() - llm_start_time) * 1000)
+                
+                prev_hash = self._persist_event(
+                    run_id=run_id,
+                    event_type="llm_processing_completed",
+                    payload={
+                        "agent_id": agent.agent_id,
+                        "round_idx": 0,
+                        "duration_ms": llm_duration_ms,
+                        "output_tokens": len(content.split()),
+                    },
+                    prev_hash=prev_hash,
+                )
+                
+                initial_answers[agent.agent_id] = content
+            except Exception as e:
+                prev_hash = self._persist_event(
+                    run_id=run_id,
+                    event_type="llm_error",
+                    payload={
+                        "agent_id": agent.agent_id,
+                        "error": str(e),
+                        "round_idx": 0,
+                    },
+                    prev_hash=prev_hash,
+                )
+                raise
 
             msg = DebateMessage(run_id=run_id, agent_id=agent.agent_id, role="assistant", content=content, round_idx=0)
             messages.append(msg)
@@ -153,13 +247,14 @@ class DebateOrchestrator:
                 prev_hash=prev_hash,
             )
 
+
         if config.max_rounds >= 2:
             for idx in scheduled_order:
                 agent = config.agents[idx]
                 own_answer = initial_answers.get(agent.agent_id, "")
                 peer_answers = {aid: ans for aid, ans in initial_answers.items() if aid != agent.agent_id}
                 prompt_msgs = build_cross_critique_prompt(
-                    user_query=user_query,
+                    user_query=effective_query,
                     agent=agent,
                     own_answer=own_answer,
                     peer_answers=peer_answers,
@@ -177,8 +272,43 @@ class DebateOrchestrator:
                     prev_hash=prev_hash,
                 )
 
-                content = self.llm.chat(messages=prompt_msgs)
-                critiques[agent.agent_id] = content
+                prev_hash = self._persist_event(
+                    run_id=run_id,
+                    event_type="llm_processing_started",
+                    payload={"agent_id": agent.agent_id, "round_idx": 1},
+                    prev_hash=prev_hash,
+                )
+                
+                try:
+                    llm_start_time = time.time()
+                    content = self.llm.chat(messages=prompt_msgs)
+                    llm_duration_ms = int((time.time() - llm_start_time) * 1000)
+                    
+                    prev_hash = self._persist_event(
+                        run_id=run_id,
+                        event_type="llm_processing_completed",
+                        payload={
+                            "agent_id": agent.agent_id,
+                            "round_idx": 1,
+                            "duration_ms": llm_duration_ms,
+                            "output_tokens": len(content.split()),
+                        },
+                        prev_hash=prev_hash,
+                    )
+                    
+                    critiques[agent.agent_id] = content
+                except Exception as e:
+                    prev_hash = self._persist_event(
+                        run_id=run_id,
+                        event_type="llm_error",
+                        payload={
+                            "agent_id": agent.agent_id,
+                            "error": str(e),
+                            "round_idx": 1,
+                        },
+                        prev_hash=prev_hash,
+                    )
+                    raise
                 messages.append(DebateMessage(run_id=run_id, agent_id=agent.agent_id, role="assistant", content=content, round_idx=1))
 
                 prev_hash = self._persist_event(
@@ -193,13 +323,14 @@ class DebateOrchestrator:
                     prev_hash=prev_hash,
                 )
 
+
         if config.max_rounds >= 3:
             for idx in scheduled_order:
                 agent = config.agents[idx]
                 own_answer = initial_answers.get(agent.agent_id, "")
                 critiques_from_peers = {aid: txt for aid, txt in critiques.items() if aid != agent.agent_id}
                 prompt_msgs = build_self_revision_prompt(
-                    user_query=user_query,
+                    user_query=effective_query,
                     agent=agent,
                     own_answer=own_answer,
                     critiques_from_peers=critiques_from_peers,
@@ -217,8 +348,43 @@ class DebateOrchestrator:
                     prev_hash=prev_hash,
                 )
 
-                content = self.llm.chat(messages=prompt_msgs)
-                revised_answers[agent.agent_id] = content
+                prev_hash = self._persist_event(
+                    run_id=run_id,
+                    event_type="llm_processing_started",
+                    payload={"agent_id": agent.agent_id, "round_idx": 2},
+                    prev_hash=prev_hash,
+                )
+                
+                try:
+                    llm_start_time = time.time()
+                    content = self.llm.chat(messages=prompt_msgs)
+                    llm_duration_ms = int((time.time() - llm_start_time) * 1000)
+                    
+                    prev_hash = self._persist_event(
+                        run_id=run_id,
+                        event_type="llm_processing_completed",
+                        payload={
+                            "agent_id": agent.agent_id,
+                            "round_idx": 2,
+                            "duration_ms": llm_duration_ms,
+                            "output_tokens": len(content.split()),
+                        },
+                        prev_hash=prev_hash,
+                    )
+                    
+                    revised_answers[agent.agent_id] = content
+                except Exception as e:
+                    prev_hash = self._persist_event(
+                        run_id=run_id,
+                        event_type="llm_error",
+                        payload={
+                            "agent_id": agent.agent_id,
+                            "error": str(e),
+                            "round_idx": 2,
+                        },
+                        prev_hash=prev_hash,
+                    )
+                    raise
                 messages.append(DebateMessage(run_id=run_id, agent_id=agent.agent_id, role="assistant", content=content, round_idx=2))
 
                 prev_hash = self._persist_event(
@@ -232,6 +398,20 @@ class DebateOrchestrator:
                     },
                     prev_hash=prev_hash,
                 )
+
+
+        prev_hash = self._persist_event(
+            run_id=run_id,
+            event_type="consensus_started",
+            payload={
+                "agent_count": n_agents,
+                "round_count": config.max_rounds,
+                "use_quantum_weights": config.quantum.use_quantum_weights,
+            },
+            prev_hash=prev_hash,
+        )
+        
+        consensus_start_time = time.time()
 
         angles = [0.3 + (i * 0.7) for i in range(n_agents)]
         quantum_weights = quantum_weights_from_angles(
@@ -261,6 +441,18 @@ class DebateOrchestrator:
         quantum_baseline_answer = self._pick_final_by_weights(agent_ids, candidate_answers, quantum_weights)
         classical_baseline_answer = self._pick_final_by_weights(agent_ids, candidate_answers, classical_weights)
         final_answer = quantum_baseline_answer if selected_policy_weights == "quantum" else classical_baseline_answer
+        
+        consensus_duration_ms = int((time.time() - consensus_start_time) * 1000)
+        
+        prev_hash = self._persist_event(
+            run_id=run_id,
+            event_type="consensus_completed",
+            payload={
+                "duration_ms": consensus_duration_ms,
+                "selected_policy": selected_policy_weights,
+            },
+            prev_hash=prev_hash,
+        )
 
         prev_hash = self._persist_event(
             run_id=run_id,
@@ -273,6 +465,7 @@ class DebateOrchestrator:
             },
             prev_hash=prev_hash,
         )
+
 
         event_hashes = [e.event_hash for e in self.event_store.iter_events(run_id)]
         commitment = compute_run_commitment(event_hashes)

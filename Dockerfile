@@ -1,3 +1,14 @@
+FROM node:20-alpine AS frontend-build
+
+WORKDIR /frontend
+
+COPY consensus-command-main/package*.json ./
+RUN npm ci
+
+COPY consensus-command-main ./
+RUN npm run build
+
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -16,8 +27,10 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY src ./src
 COPY config ./config
 COPY data ./data
+COPY --from=frontend-build /frontend/dist ./frontend-dist
 
 ENV PYTHONPATH=/app
+ENV FRONTEND_DIST_DIR=/app/frontend-dist
 
 EXPOSE 8000
 

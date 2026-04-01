@@ -5,12 +5,14 @@ import os
 import queue
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import psutil
 import yaml
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .contract_anchor import ContractAnchoringClient
@@ -27,6 +29,9 @@ class RunRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     max_rounds: int = Field(default=2, ge=1, le=3)
     agent_count: int = Field(default=3, ge=2, le=10)
+    enable_web_context: bool = False
+    web_context_query: str | None = Field(default=None, min_length=1, max_length=4000)
+    web_context_max_items: int = Field(default=3, ge=1, le=8)
     use_quantum_randomness: bool = True
     use_quantum_weights: bool = True
     use_quantum_scheduling: bool = True
@@ -139,6 +144,25 @@ def _build_config(req: RunRequest, agents: List[AgentSpec]) -> DebateConfig:
 def create_app() -> FastAPI:
     app = FastAPI(title="Q-CONSENSUS")
 
+    repo_root = Path(__file__).resolve().parents[2]
+    local_frontend_dist = repo_root / "consensus-command-main" / "dist"
+    configured_frontend_dist = os.getenv("FRONTEND_DIST_DIR")
+    if configured_frontend_dist:
+        frontend_dist = Path(configured_frontend_dist)
+    elif Path("/app/frontend-dist").exists():
+        frontend_dist = Path("/app/frontend-dist")
+    elif local_frontend_dist.exists():
+        frontend_dist = local_frontend_dist
+    else:
+        frontend_dist = Path("/app/frontend-dist")
+    frontend_index = frontend_dist / "index.html"
+
+    assets_dir = frontend_dist / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
+
+    public_dir = frontend_dist
+
     event_dir = os.getenv("EVENT_STORE_DIR") or os.path.join("data", "events")
     store = JsonlEventStore(event_dir)
 
@@ -215,9 +239,16 @@ def create_app() -> FastAPI:
 
     def _run_async_worker(run_key: str, req: RunRequest) -> None:
         cfg = _build_config(req, agents)
-        _set_run_state(run_key, {"run_id": run_key, "status": "running"})
+        _set_run_state(run_key, {"run_id": run_key, "status": "running", "start_time_ms": int(time.time() * 1000)})
         try:
-            result = orch.run(user_query=req.query, config=cfg, run_id=run_key)
+            result = orch.run(
+                user_query=req.query,
+                config=cfg,
+                run_id=run_key,
+                enable_web_context=req.enable_web_context,
+                web_context_query=req.web_context_query,
+                web_context_max_items=req.web_context_max_items,
+            )
             _record_metrics(run_key, cfg, len(result.messages))
             _set_run_state(
                 run_key,
@@ -239,8 +270,10 @@ def create_app() -> FastAPI:
                 },
             )
 
-    @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
+    @app.get("/", response_class=HTMLResponse, response_model=None)
+    def index():
+        if frontend_index.exists():
+            return FileResponse(str(frontend_index))
         return """<!doctype html>
 <html>
 <head>
@@ -689,6 +722,23 @@ async function runDebateAsync() {
 </body>
 </html>"""
 
+    @app.get("/favicon.ico")
+    def favicon():
+        path = public_dir / "favicon.ico"
+        if path.exists():
+            return FileResponse(str(path))
+        path = public_dir / "placeholder.svg"
+        if path.exists():
+            return FileResponse(str(path))
+        return HTMLResponse(status_code=404, content="")
+
+    @app.get("/robots.txt")
+    def robots():
+        path = public_dir / "robots.txt"
+        if path.exists():
+            return FileResponse(str(path))
+        return HTMLResponse(status_code=404, content="")
+
     @app.get("/api/status")
     def status() -> dict:
         _refresh_anchor_client()
@@ -702,12 +752,20 @@ async function runDebateAsync() {
             "agents_config_path": agents_path,
             "contract_anchor_enabled": bool(contract_client and anchor_contract_address),
             "contract_anchor_init_error": contract_init_error,
+            "frontend_dist_dir": str(frontend_dist),
+            "frontend_index_exists": frontend_index.exists(),
         }
 
     @app.post("/api/run", response_model=RunResponse)
     def run(req: RunRequest) -> RunResponse:
         cfg = _build_config(req, agents)
-        result = orch.run(user_query=req.query, config=cfg)
+        result = orch.run(
+            user_query=req.query,
+            config=cfg,
+            enable_web_context=req.enable_web_context,
+            web_context_query=req.web_context_query,
+            web_context_max_items=req.web_context_max_items,
+        )
         _record_metrics(result.run_id, cfg, len(result.messages))
         _set_run_state(
             result.run_id,
@@ -816,6 +874,130 @@ async function runDebateAsync() {
         return {"verified": False, "reason": "ANCHOR_CONTRACT_ADDRESS is not configured"}
       return verifier.verify_run(run_id=run_id, contract_address=anchor_contract_address)
 
+    @app.get("/api/run/{run_id}/progress")
+    def run_progress(run_id: str) -> dict:
+        """Return detailed execution progress for real-time UI updates."""
+        events = list(store.iter_events(run_id))
+        event_types = {e.event_type for e in events}
+        
+        # Determine current stage
+        current_stage = "idle"
+        stage_progress = 0.0
+        
+        if "input_received" in event_types:
+            current_stage = "initializing"
+            stage_progress = 0.1
+        if "web_fetch_started" in event_types:
+            current_stage = "fetching_web"
+            if "web_fetch_completed" in event_types:
+                stage_progress = 1.0
+            else:
+                stage_progress = 0.5
+        if "quantum_randomness" in event_types:
+            current_stage = "sampling"
+            stage_progress = 0.3
+        if "quantum_scheduling" in event_types:
+            current_stage = "scheduling"
+            stage_progress = 0.4
+        
+        # Count agent responses to gauge thinking progress
+        agent_responded_count = sum(1 for e in events if e.event_type == "agent_responded")
+        if agent_responded_count > 0:
+            current_stage = "thinking"
+            # Estimate: assume 3 agents, 2 rounds = 6 responses max
+            stage_progress = min(1.0, agent_responded_count / 6.0)
+        
+        if "consensus_started" in event_types:
+            current_stage = "consensus"
+            if "consensus_completed" in event_types:
+                stage_progress = 1.0
+            else:
+                stage_progress = 0.5
+        if "final_answer" in event_types:
+            current_stage = "finalizing"
+            stage_progress = 0.9
+        if "run_committed" in event_types:
+            current_stage = "completed"
+            stage_progress = 1.0
+        
+        # Count agents and rounds from metadata or events
+        total_agents = 0
+        agents_completed = 0
+        total_rounds = 0
+        current_round = 0
+        
+        # Try to infer from state or first prompt event
+        state = _get_run_state(run_id)
+        if state:
+            total_agents = state.get("agent_count", 3)
+            total_rounds = state.get("max_rounds", 2)
+        
+        # Infer round from agent_responded events
+        if events:
+            max_round_idx = max(
+                (e.payload.get("round_idx", 0) for e in events if e.event_type == "agent_responded"),
+                default=0
+            )
+            current_round = max_round_idx + 1
+        
+        # Count unique agents who responded
+        agents_completed = len({e.payload.get("agent_id") for e in events if e.event_type == "agent_responded"})
+        
+        # Calculate elapsed and estimated time
+        time_elapsed_ms = 0
+        estimated_total_ms = 0
+        state = _get_run_state(run_id)
+        if state and state.get("start_time_ms"):
+            current_time_ms = int(time.time() * 1000)
+            time_elapsed_ms = max(0, current_time_ms - state.get("start_time_ms", current_time_ms))
+            
+            # Estimate total time based on what's visible
+            if "run_committed" in event_types:
+                # Done - actual elapsed is total
+                estimated_total_ms = time_elapsed_ms
+            elif "consensus_started" in event_types:
+                # In consensus/finalization - assume 10-15s more
+                estimated_total_ms = time_elapsed_ms + 15000
+            elif agent_responded_count > 0:
+                # In thinking - assume 5-10s more
+                estimated_total_ms = time_elapsed_ms + 8000
+            elif "quantum_scheduling" in event_types:
+                # Past sampling - assume 10-15s more
+                estimated_total_ms = time_elapsed_ms + 12000
+            elif "web_fetch_started" in event_types:
+                # Still fetching - assume 15-30s total
+                estimated_total_ms = time_elapsed_ms + 25000
+            else:
+                # Just started - assume 30s total
+                estimated_total_ms = time_elapsed_ms + 30000
+        
+        recent_messages = []
+        event_type_order = [
+            "input_received", "web_fetch_started", "web_fetch_completed",
+            "quantum_randomness", "quantum_scheduling", "agent_prompted",
+            "llm_processing_started", "llm_processing_completed", "agent_responded",
+            "consensus_started", "consensus_completed", "final_answer", "run_committed"
+        ]
+        for etype in event_type_order:
+            if etype in event_types:
+                msg = etype.replace("_", " ").title()
+                recent_messages.append(msg)
+        
+        return {
+            "run_id": run_id,
+            "current_stage": current_stage,
+            "stage_progress": stage_progress,
+            "current_round": current_round,
+            "total_rounds": total_rounds,
+            "agents_completed": agents_completed,
+            "total_agents": total_agents,
+            "event_count": len(events),
+            "messages": recent_messages[-5:],  # Last 5 stage messages
+            "eta_seconds": 30 if current_stage != "completed" else 0,
+            "time_elapsed_ms": time_elapsed_ms,
+            "estimated_total_ms": estimated_total_ms,
+        }
+
     @app.get("/api/metrics")
     def metrics_summary() -> dict:
         return metrics.get_summary()
@@ -823,6 +1005,7 @@ async function runDebateAsync() {
     @app.get("/api/metrics/quantum-vs-classical")
     def metrics_qvc() -> dict:
         return metrics.get_quantum_vs_classical()
+
 
     return app
 
