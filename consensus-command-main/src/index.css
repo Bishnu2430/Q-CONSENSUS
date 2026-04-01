@@ -1,0 +1,145 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Brand tokens */
+    --bg-warm: 30 50% 93%;      /* #F7EFE4 */
+    --bg-cool: 210 50% 91%;     /* #DCE8F4 */
+    --ink: 212 41% 14%;         /* #152334 */
+    --accent-warm: 6 68% 44%;   /* #B72C1C */
+    --accent-cool: 183 75% 30%; /* #137D85 */
+    --success: 152 82% 27%;     /* #0A7C41 */
+    --error: 0 67% 34%;         /* #8F1D1D */
+    --border-alpha: 212 41% 14%;
+
+    /* Shadcn mappings */
+    --background: 30 50% 93%;
+    --foreground: 212 41% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 212 41% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 212 41% 14%;
+    --primary: 212 41% 14%;
+    --primary-foreground: 30 50% 93%;
+    --secondary: 210 50% 91%;
+    --secondary-foreground: 212 41% 14%;
+    --muted: 210 30% 94%;
+    --muted-foreground: 212 20% 46%;
+    --accent: 183 75% 30%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 67% 34%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 212 20% 86%;
+    --input: 212 20% 86%;
+    --ring: 183 75% 30%;
+    --radius: 0.875rem;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+
+    /* Glass tokens */
+    --glass-bg: rgba(255,255,255,0.80);
+    --glass-blur: 6px;
+    --glass-shadow: 0 2px 16px rgba(21,35,52,0.06), 0 1px 4px rgba(21,35,52,0.04);
+    --glass-border: rgba(21,35,52,0.16);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+  }
+
+  body {
+    @apply text-foreground antialiased;
+    background: linear-gradient(135deg, hsl(var(--bg-warm)), hsl(var(--bg-cool)));
+    min-height: 100vh;
+  }
+
+  code, .font-mono {
+    font-family: 'IBM Plex Mono', monospace;
+  }
+}
+
+@layer components {
+  .glass-card {
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    box-shadow: var(--glass-shadow);
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full;
+    border: 1px solid var(--glass-border);
+  }
+
+  .pill-success {
+    @apply pill;
+    background: hsl(var(--success) / 0.1);
+    color: hsl(var(--success));
+    border-color: hsl(var(--success) / 0.3);
+  }
+
+  .pill-error {
+    @apply pill;
+    background: hsl(var(--error) / 0.1);
+    color: hsl(var(--error));
+    border-color: hsl(var(--error) / 0.3);
+  }
+
+  .pill-warm {
+    @apply pill;
+    background: hsl(var(--accent-warm) / 0.1);
+    color: hsl(var(--accent-warm));
+    border-color: hsl(var(--accent-warm) / 0.3);
+  }
+
+  .pill-cool {
+    @apply pill;
+    background: hsl(var(--accent-cool) / 0.1);
+    color: hsl(var(--accent-cool));
+    border-color: hsl(var(--accent-cool) / 0.3);
+  }
+
+  .pill-neutral {
+    @apply pill;
+    background: hsl(var(--ink) / 0.06);
+    color: hsl(var(--ink) / 0.7);
+  }
+
+  .meter-track {
+    @apply w-full h-2 rounded-full;
+    background: hsl(var(--ink) / 0.08);
+  }
+
+  .meter-fill {
+    @apply h-full rounded-full transition-all duration-500 ease-out;
+  }
+}
+
+@layer utilities {
+  @media (prefers-reduced-motion: reduce) {
+    .motion-safe\:animate-fade-in,
+    .motion-safe\:animate-slide-up,
+    .motion-safe\:animate-pulse-live {
+      animation: none !important;
+    }
+  }
+}

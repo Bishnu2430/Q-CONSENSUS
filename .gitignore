@@ -33,3 +33,7 @@ data/
 
 # NOT ignored
 !environment.yml
+
+# User-requested git hygiene
+*.md
+tests/
