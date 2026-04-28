@@ -25,19 +25,16 @@ export function useRunProgress(runId: string | null) {
     lastPollTimeRef.current = now;
 
     try {
-      const response = await fetch(`/api/run/${runId}/progress`);
-      if (response.ok) {
-        const data = await response.json();
-        const parsed = ProgressSchema.safeParse({
-          current_stage: data.current_stage,
-          agents_completed: data.agents_completed,
-          total_agents: data.total_agents,
-          time_elapsed_ms: data.time_elapsed_ms,
-          estimated_total_ms: data.estimated_total_ms,
-        });
-        if (parsed.success) {
-          setProgress(parsed.data);
-        }
+      const data = await api.getProgress(runId);
+      const parsed = ProgressSchema.safeParse({
+        current_stage: data.current_stage,
+        agents_completed: data.agents_completed,
+        total_agents: data.total_agents,
+        time_elapsed_ms: data.time_elapsed_ms,
+        estimated_total_ms: data.estimated_total_ms,
+      });
+      if (parsed.success) {
+        setProgress(parsed.data);
       }
     } catch {
       // Continue polling on error

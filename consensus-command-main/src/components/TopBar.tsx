@@ -16,17 +16,7 @@ const connectionIcons: Record<string, React.ReactNode> = {
 };
 
 export function TopBar() {
-  const { runStatus, apiConnection, streamState, activeTab, setActiveTab } =
-    useAppStore();
-
-  const tabs = [
-    { id: "control", label: "Control" },
-    { id: "status", label: "Status" },
-    { id: "stream", label: "Stream" },
-    { id: "reasoning", label: "Reasoning" },
-    { id: "verify", label: "Verification" },
-    { id: "metrics", label: "Metrics" },
-  ];
+  const { runStatus, apiConnection, streamState, currentRunId } = useAppStore();
 
   return (
     <motion.header
@@ -39,30 +29,17 @@ export function TopBar() {
         <h1 className="text-sm font-bold tracking-tight text-foreground">
           Q-CONSENSUS{" "}
           <span className="font-normal text-muted-foreground">
-            Debate Control Room
+            Unified Ops Dashboard
           </span>
         </h1>
       </div>
 
-      <nav className="flex items-center gap-1 overflow-x-auto" role="tablist">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`px-3 py-1.5 text-xs font-medium rounded-full transition-all whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-              activeTab === tab.id
-                ? "bg-foreground text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
-
       <div className="flex items-center gap-2">
+        {currentRunId && (
+          <span className="pill-neutral text-[10px] font-mono max-w-[220px] truncate">
+            run: {currentRunId}
+          </span>
+        )}
         <span className={statusColors[runStatus]}>
           {runStatus === "running" && (
             <span className="w-1.5 h-1.5 rounded-full bg-current motion-safe:animate-pulse-live" />

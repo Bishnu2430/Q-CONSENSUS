@@ -118,9 +118,41 @@ export const useAppStore = create<AppState>()(
 
       events: [],
       addEvents: (evts) => {
+        const normalized = evts
+          .filter(
+            (e): e is StreamEvent =>
+              !!e &&
+              typeof e === "object" &&
+              typeof (e as Record<string, unknown>).run_id === "string" &&
+              typeof (e as Record<string, unknown>).event_type === "string",
+          )
+          .map((e, idx) => {
+            const runId = String(e.run_id);
+            const eventType = String(e.event_type);
+            const ts =
+              typeof e.ts_unix_ms === "number"
+                ? e.ts_unix_ms
+                : typeof e.ts === "number"
+                  ? e.ts
+                  : Date.now();
+
+            return {
+              ...e,
+              event_id:
+                typeof e.event_id === "string" && e.event_id.length > 0
+                  ? e.event_id
+                  : `${runId}-${eventType}-${ts}-${idx}`,
+              payload:
+                e.payload && typeof e.payload === "object"
+                  ? (e.payload as Record<string, unknown>)
+                  : { value: e.payload ?? null },
+            };
+          });
+
+        if (normalized.length === 0) return;
         const current = get().events;
         const existingIds = new Set(current.map((e) => e.event_id));
-        const newEvts = evts.filter((e) => !existingIds.has(e.event_id));
+        const newEvts = normalized.filter((e) => !existingIds.has(e.event_id));
         if (newEvts.length === 0) return;
         const merged = [...current, ...newEvts].slice(-MAX_EVENTS_PER_RUN);
         set({ events: merged });

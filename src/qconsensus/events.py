@@ -119,19 +119,41 @@ class JsonlEventStore:
         if not os.path.exists(path):
             return iter(())
         with open(path, "r", encoding="utf-8") as f:
-            for line in f:
+            for idx, line in enumerate(f, start=1):
                 if not line.strip():
                     continue
-                obj = json.loads(line)
-                yield Event(
-                    event_id=obj["event_id"],
-                    run_id=obj["run_id"],
-                    ts_unix_ms=obj["ts_unix_ms"],
-                    event_type=obj["event_type"],
-                    payload=obj["payload"],
-                    prev_event_hash=obj.get("prev_event_hash"),
-                    event_hash=obj["event_hash"],
-                )
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    # Keep processing subsequent lines; a single malformed event must not block the run.
+                    sanitized = "".join(ch for ch in line if ord(ch) >= 0x20 or ch in "\t\r\n")
+                    try:
+                        obj = json.loads(sanitized)
+                    except json.JSONDecodeError:
+                        logging.warning(
+                            "[EVENTS_PARSE_ERROR] run_id=%s line=%d - skipping malformed event line",
+                            run_id,
+                            idx,
+                        )
+                        continue
+
+                try:
+                    yield Event(
+                        event_id=obj["event_id"],
+                        run_id=obj["run_id"],
+                        ts_unix_ms=obj["ts_unix_ms"],
+                        event_type=obj["event_type"],
+                        payload=obj["payload"],
+                        prev_event_hash=obj.get("prev_event_hash"),
+                        event_hash=obj["event_hash"],
+                    )
+                except KeyError:
+                    logging.warning(
+                        "[EVENTS_SCHEMA_ERROR] run_id=%s line=%d - missing required fields",
+                        run_id,
+                        idx,
+                    )
+                    continue
 
     def get_tail_hash(self, run_id: str) -> Optional[str]:
         last: Optional[Event] = None

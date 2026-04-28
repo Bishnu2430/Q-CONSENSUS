@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 from web3 import Web3
+try:
+    # Web3 v7+
+    from web3.middleware import ExtraDataToPOAMiddleware as _poa_middleware
+except Exception:  # pragma: no cover - compatibility fallback
+    # Web3 v6
+    from web3.middleware import geth_poa_middleware as _poa_middleware
 
 
 # Minimal Solidity contract for anchoring (simplified)
@@ -36,6 +42,9 @@ class ContractAnchoringClient:
         self.w3 = Web3(Web3.HTTPProvider(self.config.rpc_url))
         if not self.w3.is_connected():
             raise RuntimeError(f"Cannot connect to Ethereum RPC at {self.config.rpc_url}")
+
+        # Required for Clique/PoA chains where extraData is larger than 32 bytes.
+        self.w3.middleware_onion.inject(_poa_middleware, layer=0)
 
         # Contract ABI for commit function
         self.contract_abi = [

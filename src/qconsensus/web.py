@@ -239,7 +239,16 @@ def create_app() -> FastAPI:
 
     def _run_async_worker(run_key: str, req: RunRequest) -> None:
         cfg = _build_config(req, agents)
-        _set_run_state(run_key, {"run_id": run_key, "status": "running", "start_time_ms": int(time.time() * 1000)})
+        _set_run_state(
+            run_key,
+            {
+                "run_id": run_key,
+                "status": "running",
+                "start_time_ms": int(time.time() * 1000),
+                "agent_count": len(cfg.agents),
+                "max_rounds": cfg.max_rounds,
+            },
+        )
         try:
             result = orch.run(
                 user_query=req.query,
@@ -787,6 +796,17 @@ async function runDebateAsync() {
     @app.post("/api/run_async", response_model=AsyncRunResponse)
     def run_async(req: RunRequest) -> AsyncRunResponse:
         run_key = f"pending-{int(time.time() * 1000)}"
+        cfg = _build_config(req, agents)
+        _set_run_state(
+            run_key,
+            {
+                "run_id": run_key,
+                "status": "running",
+                "start_time_ms": int(time.time() * 1000),
+                "agent_count": len(cfg.agents),
+                "max_rounds": cfg.max_rounds,
+            },
+        )
         t = threading.Thread(target=_run_async_worker, args=(run_key, req), daemon=True)
         t.start()
         return AsyncRunResponse(run_id=run_key, status="running")
@@ -1005,6 +1025,102 @@ async function runDebateAsync() {
     @app.get("/api/metrics/quantum-vs-classical")
     def metrics_qvc() -> dict:
         return metrics.get_quantum_vs_classical()
+
+    @app.get("/api/blockchain/history")
+    def blockchain_history(limit: int = 1000, include_empty_blocks: bool = False) -> dict:
+      _refresh_anchor_client()
+      if not contract_client:
+        return {
+          "enabled": False,
+          "reason": "Contract anchor client unavailable",
+          "contract_address": anchor_contract_address,
+          "latest_block": None,
+          "total_blocks": 0,
+          "total_txs": 0,
+          "records": [],
+          "committed_runs": [],
+        }
+
+      try:
+        latest_block = int(contract_client.w3.eth.block_number)
+        scan_limit = max(1, min(limit, 10000))
+        start_block = max(0, latest_block - scan_limit + 1)
+
+        committed_by_tx: Dict[str, Dict[str, Any]] = {}
+        event_dir_path = Path(event_dir)
+        if event_dir_path.exists():
+          for fp in event_dir_path.glob("*.jsonl"):
+            run_id = fp.stem
+            for ev in store.iter_events(run_id):
+              if ev.event_type != "run_committed":
+                continue
+              payload = ev.payload or {}
+              tx_hash = payload.get("anchor_tx_hash")
+              if not isinstance(tx_hash, str) or not tx_hash:
+                continue
+              committed_by_tx[tx_hash.lower()] = {
+                "run_id": run_id,
+                "commitment": payload.get("commitment"),
+                "anchor_tx_hash": tx_hash,
+                "ts_unix_ms": ev.ts_unix_ms,
+              }
+
+        records: List[Dict[str, Any]] = []
+        total_txs = 0
+        for bn in range(start_block, latest_block + 1):
+          block = contract_client.w3.eth.get_block(bn, full_transactions=True)
+          txs: List[Dict[str, Any]] = []
+          for tx in block.transactions:
+            tx_hash = tx.hash.hex()
+            tx_item: Dict[str, Any] = {
+              "hash": tx_hash,
+              "from": tx.get("from"),
+              "to": tx.get("to"),
+              "value_wei": int(tx.get("value", 0)),
+              "gas": int(tx.get("gas", 0)),
+              "gas_price": int(tx.get("gasPrice", 0)) if tx.get("gasPrice") is not None else None,
+              "nonce": int(tx.get("nonce", 0)),
+            }
+            linked = committed_by_tx.get(tx_hash.lower())
+            if linked:
+              tx_item["anchored_run"] = linked
+            txs.append(tx_item)
+
+          total_txs += len(txs)
+          if txs or include_empty_blocks:
+            records.append(
+              {
+                "number": bn,
+                "hash": block.hash.hex(),
+                "parent_hash": block.parentHash.hex(),
+                "timestamp": int(block.timestamp),
+                "miner": block.miner,
+                "tx_count": len(txs),
+                "transactions": txs,
+              }
+            )
+
+        return {
+          "enabled": True,
+          "contract_address": anchor_contract_address,
+          "latest_block": latest_block,
+          "start_block": start_block,
+          "total_blocks": latest_block + 1,
+          "total_txs": total_txs,
+          "records": records,
+          "committed_runs": list(committed_by_tx.values()),
+        }
+      except Exception as exc:
+        return {
+          "enabled": False,
+          "reason": str(exc),
+          "contract_address": anchor_contract_address,
+          "latest_block": None,
+          "total_blocks": 0,
+          "total_txs": 0,
+          "records": [],
+          "committed_runs": [],
+        }
 
 
     return app

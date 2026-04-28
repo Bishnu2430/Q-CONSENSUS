@@ -28,6 +28,38 @@ wait_for() {
   return 1
 }
 
+start_compose_with_retries() {
+  local max_attempts=4
+  local sleep_seconds=3
+  local attempt=1
+  local output
+
+  while [[ "$attempt" -le "$max_attempts" ]]; do
+    if output=$(COMPOSE_BAKE=false docker compose up --build -d 2>&1); then
+      echo "$output"
+      return 0
+    fi
+
+    echo "$output"
+
+    if echo "$output" | grep -qiE 'registry-1\.docker\.io|server misbehaving|temporary failure in name resolution|lookup .*:53'; then
+      echo "[warn] Docker registry DNS lookup failed (attempt $attempt/$max_attempts)."
+      echo "[info] Retrying in ${sleep_seconds}s..."
+      sleep "$sleep_seconds"
+      sleep_seconds=$((sleep_seconds * 2))
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    echo "[error] docker compose failed for a non-retryable reason"
+    return 1
+  done
+
+  echo "[error] docker compose failed after $max_attempts attempts due to registry/DNS resolution issues"
+  echo "[hint] Check DNS settings for Docker daemon or retry when network resolution is stable"
+  return 1
+}
+
 env_value() {
   local key="$1"
   grep -E "^${key}=" .env | head -n1 | cut -d'=' -f2-
@@ -61,7 +93,7 @@ if [[ ! -f "models/$model_file" ]]; then
 fi
 
 echo "Starting Docker services..."
-docker compose up --build -d
+start_compose_with_retries
 
 echo "Running health checks..."
 

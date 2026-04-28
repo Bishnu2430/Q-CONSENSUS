@@ -13,10 +13,12 @@ export function ControlPanel() {
     runStatus,
     setRun,
     setRunStatus,
+    setResult,
+    addEvents,
     systemStatus,
     events,
-    runMeta,
     progress,
+    setProgress,
   } = useAppStore();
 
   // Initialize unified progress polling
@@ -138,7 +140,7 @@ export function ControlPanel() {
     [setRunStatus],
   );
 
-  const handleRun = async (async: boolean) => {
+  const handleRun = async (isAsync: boolean) => {
     const parsed = buildRequest();
     if (!parsed.success) {
       const msg = parsed.error.issues
@@ -150,17 +152,24 @@ export function ControlPanel() {
     setLoading(true);
     setProgress(null);
     try {
-      const res = await api.runAsync(parsed.data);
-      setRun(res.run_id, "running", {
-        mode: async ? "async" : "sync",
-        agentCount: parsed.data.agent_count,
-        maxRounds: parsed.data.max_rounds,
-      });
-
-      if (async) {
+      if (isAsync) {
+        const res = await api.runAsync(parsed.data);
+        setRun(res.run_id, "running", {
+          mode: "async",
+          agentCount: parsed.data.agent_count,
+          maxRounds: parsed.data.max_rounds,
+        });
         toast.success(`Async run started: ${res.run_id.slice(0, 8)}…`);
       } else {
-        const result = await waitForResult(res.run_id);
+        const started = await api.runAsync(parsed.data);
+        setRun(started.run_id, "running", {
+          mode: "sync",
+          agentCount: parsed.data.agent_count,
+          maxRounds: parsed.data.max_rounds,
+        });
+        const result = await waitForResult(started.run_id);
+        const evts = await api.getEvents(started.run_id).catch(() => []);
+        addEvents(evts);
         if (result.status === "completed") {
           toast.success("Synchronous run completed");
         } else {

@@ -8,15 +8,10 @@ import { FinalReasoning } from "@/components/FinalReasoning";
 import { SystemStatus } from "@/components/SystemStatus";
 import { VerificationPanel } from "@/components/VerificationPanel";
 import { MetricsPanel } from "@/components/MetricsPanel";
-import { motion, AnimatePresence } from "framer-motion";
-import { Download, ChevronDown } from "lucide-react";
+import { TraceabilityPanel } from "@/components/TraceabilityPanel";
+import { motion } from "framer-motion";
+import { Download } from "lucide-react";
 import { toast } from "sonner";
-
-interface PanelConfig {
-  id: string;
-  label: string;
-  component: React.ReactNode;
-}
 
 function ExportButton() {
   const events = useAppStore((s) => s.events);
@@ -46,54 +41,8 @@ function ExportButton() {
   );
 }
 
-function PanelCard({
-  panel,
-  isExpanded,
-  onToggle,
-}: {
-  panel: PanelConfig;
-  isExpanded: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <motion.div
-      layout
-      className="glass-card overflow-hidden"
-      transition={{ duration: 0.3, ease: "easeInOut" }}
-    >
-      <button
-        onClick={onToggle}
-        className="w-full px-4 py-3 flex items-center justify-between hover:bg-foreground/5 transition-colors"
-      >
-        <h2 className="text-sm font-semibold text-foreground">{panel.label}</h2>
-        <motion.div
-          animate={{ rotate: isExpanded ? 180 : 0 }}
-          transition={{ duration: 0.2 }}
-        >
-          <ChevronDown className="w-4 h-4 text-muted-foreground" />
-        </motion.div>
-      </button>
-
-      <AnimatePresence>
-        <motion.div
-          initial={false}
-          animate={{
-            opacity: isExpanded ? 1 : 0,
-            height: isExpanded ? "auto" : 0,
-          }}
-          exit={{ opacity: 0, height: 0 }}
-          transition={{ duration: 0.3, ease: "easeInOut" }}
-          className="border-t border-border overflow-hidden"
-        >
-          <div className="p-4">{panel.component}</div>
-        </motion.div>
-      </AnimatePresence>
-    </motion.div>
-  );
-}
-
 export default function MissionControl() {
-  const { currentRunId, runStatus, activeTab, setActiveTab } = useAppStore();
+  const { currentRunId, runStatus } = useAppStore();
 
   // Start SSE stream when there's an active async run
   useSSEStream(runStatus === "running" ? currentRunId : null);
@@ -101,17 +50,8 @@ export default function MissionControl() {
   // Poll system status
   useSystemStatus();
 
-  const panels: PanelConfig[] = [
-    { id: "control", label: "Control", component: <ControlPanel /> },
-    { id: "status", label: "Status", component: <SystemStatus /> },
-    { id: "stream", label: "Stream", component: <StreamPanel /> },
-    { id: "reasoning", label: "Reasoning", component: <FinalReasoning /> },
-    { id: "verify", label: "Verification", component: <VerificationPanel /> },
-    { id: "metrics", label: "Metrics", component: <MetricsPanel /> },
-  ];
-
   return (
-    <div className="min-h-screen flex flex-col gap-3 p-3 sm:p-4 max-w-[1600px] mx-auto">
+    <div className="min-h-screen flex flex-col gap-3 p-3 sm:p-4 max-w-[1680px] mx-auto">
       <TopBar />
 
       <div className="flex items-center justify-end gap-2 px-1">
@@ -119,17 +59,32 @@ export default function MissionControl() {
       </div>
 
       <div className="flex-1 flex flex-col gap-3 min-h-0">
-        <div className="flex flex-col gap-2.5 overflow-y-auto">
-          {panels.map((panel) => (
-            <PanelCard
-              key={panel.id}
-              panel={panel}
-              isExpanded={activeTab === panel.id}
-              onToggle={() =>
-                setActiveTab(activeTab === panel.id ? "control" : panel.id)
-              }
-            />
-          ))}
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 items-start">
+          <div className="xl:col-span-2">
+            <ControlPanel />
+          </div>
+          <div className="xl:col-span-1">
+            <SystemStatus />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 items-start">
+          <div className="xl:col-span-2">
+            <StreamPanel />
+          </div>
+          <div className="xl:col-span-1">
+            <FinalReasoning />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 items-start">
+          <div className="xl:col-span-2">
+            <TraceabilityPanel />
+          </div>
+          <div className="xl:col-span-1 flex flex-col gap-3">
+            <VerificationPanel />
+            <MetricsPanel />
+          </div>
         </div>
       </div>
 
