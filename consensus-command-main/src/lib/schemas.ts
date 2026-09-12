@@ -11,6 +11,10 @@ export const StatusSchema = z.object({
   agents_config_path: z.string(),
   contract_anchor_enabled: z.boolean(),
   contract_anchor_init_error: z.string().nullable(),
+  contract_anchor_address: z.string().nullable().optional(),
+  contract_deployed: z.boolean().nullable().optional(),
+  contract_code_check_error: z.string().nullable().optional(),
+  tts_enabled: z.boolean().optional(),
 });
 export type Status = z.infer<typeof StatusSchema>;
 

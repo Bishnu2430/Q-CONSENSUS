@@ -4,11 +4,13 @@ import { useSystemStatus } from "@/hooks/useSystemStatus";
 import { TopBar } from "@/components/TopBar";
 import { ControlPanel } from "@/components/ControlPanel";
 import { StreamPanel } from "@/components/StreamPanel";
+import { AgentRelationshipGraph } from "@/components/AgentRelationshipGraph";
 import { FinalReasoning } from "@/components/FinalReasoning";
 import { SystemStatus } from "@/components/SystemStatus";
 import { VerificationPanel } from "@/components/VerificationPanel";
 import { MetricsPanel } from "@/components/MetricsPanel";
 import { TraceabilityPanel } from "@/components/TraceabilityPanel";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { motion } from "framer-motion";
 import { Download } from "lucide-react";
 import { toast } from "sonner";
@@ -59,37 +61,50 @@ export default function MissionControl() {
       </div>
 
       <div className="flex-1 flex flex-col gap-3 min-h-0">
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 items-start">
-          <div className="xl:col-span-2">
-            <ControlPanel />
-          </div>
-          <div className="xl:col-span-1">
+        {/* Primary view: a fixed-height row so a growing chat feed can never
+            push the rest of the page around. Left column (controls, final
+            answer, blockchain) scrolls independently of the right column
+            (relationship graph + chat feed). */}
+        <div
+          className="grid grid-cols-1 xl:grid-cols-[380px_1fr] gap-3 min-h-[560px]"
+          style={{ height: "78vh" }}
+        >
+          <div className="flex flex-col gap-3 overflow-y-auto pr-1 min-h-0">
             <SystemStatus />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 items-start">
-          <div className="xl:col-span-2">
-            <StreamPanel />
-          </div>
-          <div className="xl:col-span-1">
+            <ControlPanel />
             <FinalReasoning />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 items-start">
-          <div className="xl:col-span-2">
             <TraceabilityPanel />
           </div>
-          <div className="xl:col-span-1 flex flex-col gap-3">
-            <VerificationPanel />
-            <MetricsPanel />
+
+          <div className="flex flex-col gap-3 min-h-0">
+            <div className="shrink-0 h-[46%] min-h-[320px]">
+              <AgentRelationshipGraph />
+            </div>
+            <div className="flex-1 min-h-0">
+              <StreamPanel />
+            </div>
           </div>
         </div>
+
+        {/* Secondary views: metrics and on-chain verification. Traceability
+            (+ the quantum circuit view embedded in it) lives in the always-
+            visible left column above instead of a tab. */}
+        <Tabs defaultValue="metrics" className="w-full">
+          <TabsList className="glass-card w-full grid grid-cols-2 h-auto p-1 bg-[var(--glass-bg)]">
+            <TabsTrigger value="metrics">Metrics</TabsTrigger>
+            <TabsTrigger value="verification">Verification</TabsTrigger>
+          </TabsList>
+          <TabsContent value="metrics" className="mt-3">
+            <MetricsPanel />
+          </TabsContent>
+          <TabsContent value="verification" className="mt-3">
+            <VerificationPanel />
+          </TabsContent>
+        </Tabs>
       </div>
 
       <footer className="text-center text-[10px] text-muted-foreground py-2">
-        Q-CONSENSUS Debate Orchestrator — Mission Control v1.0
+        Q-CONSENSUS Debate Orchestrator — Mission Control v2.0
       </footer>
     </div>
   );

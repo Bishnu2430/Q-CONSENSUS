@@ -41,3 +41,4 @@ models/tts/
 
 # User-requested git hygiene
 *.md
+.superpowers/

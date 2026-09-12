@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { Link2, Copy, ShieldCheck, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
+import { QuantumCircuitView } from "@/components/QuantumCircuitView";
 
 type VerifyResult = {
   verified?: boolean;
@@ -178,6 +179,10 @@ export function TraceabilityPanel() {
           Failed to fetch blockchain history from backend.
         </div>
       )}
+
+      <div className="border-t border-foreground/10 pt-4">
+        <QuantumCircuitView />
+      </div>
 
       <div className="space-y-2">
         <div className="text-[10px] text-muted-foreground uppercase tracking-wide">
