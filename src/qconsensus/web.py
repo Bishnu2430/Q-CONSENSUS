@@ -14,7 +14,7 @@ import psutil
 import yaml
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -27,6 +27,7 @@ from .quantum_executor import QuantumExecutor
 from .reconcile import reconcile_incomplete_runs
 from .replay import DebateReplayer
 from .security import InMemoryRateLimiter
+from .tts import TTSEngine
 from .types import AgentSpec, DebateConfig, QuantumPolicyConfig
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,11 @@ class RunResultResponse(BaseModel):
     commitment: str | None = None
     anchor_tx_hash: str | None = None
     error: str | None = None
+
+
+class TTSRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=4000)
 
 
 def _default_agents() -> List[AgentSpec]:
@@ -167,7 +173,7 @@ def create_app() -> FastAPI:
         max_requests=int(os.getenv("RUN_RATE_LIMIT_MAX", "10")),
         window_seconds=float(os.getenv("RUN_RATE_LIMIT_WINDOW_SECONDS", "60")),
     )
-    _protected_paths = {"/api/run", "/api/run_async"}
+    _protected_paths = {"/api/run", "/api/run_async", "/api/tts"}
 
     @app.middleware("http")
     async def _guard_run_endpoints(request: Request, call_next):
@@ -216,6 +222,9 @@ def create_app() -> FastAPI:
 
     llm = LlamaCppClient()
     qexec = QuantumExecutor({"base_seed": int(os.getenv("QC_BASE_SEED", "42"))})
+
+    tts_engine = TTSEngine.from_env()
+    logger.info("[STARTUP] tts_enabled=%s", tts_engine is not None)
 
     contract_init_error: str | None = None
     try:
@@ -829,9 +838,24 @@ async function runDebateAsync() {
             # anchoring will fail until scripts/deploy_contract.py is re-run.
             "contract_deployed": contract_deployed,
             "contract_code_check_error": contract_code_check_error,
+            "tts_enabled": tts_engine is not None,
             "frontend_dist_dir": str(frontend_dist),
             "frontend_index_exists": frontend_index.exists(),
         }
+
+    @app.post("/api/tts")
+    def synthesize_speech(req: TTSRequest):
+        if tts_engine is None:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "TTS is not enabled on this server (set TTS_ENABLED=true and download a voice model)"},
+            )
+        try:
+            wav_bytes = tts_engine.synthesize_wav(text=req.text, agent_id=req.agent_id)
+        except Exception:
+            logger.exception("[TTS] synthesis failed for agent_id=%s", req.agent_id)
+            return JSONResponse(status_code=500, content={"detail": "TTS synthesis failed"})
+        return Response(content=wav_bytes, media_type="audio/wav")
 
     @app.post("/api/run", response_model=RunResponse)
     def run(req: RunRequest) -> RunResponse:

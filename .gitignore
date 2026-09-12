@@ -24,6 +24,10 @@ Thumbs.db
 # Runtime data
 data/
 
+# Downloaded TTS voice models (fetched via scripts/download_tts_voice.py,
+# not committed -- ~75MB+ per voice, unlike the LFS-tracked LLM model)
+models/tts/
+
 # Test caches
 .pytest_cache/
 
@@ -33,6 +37,7 @@ data/
 
 # NOT ignored
 !environment.yml
+!.env.example
 
 # User-requested git hygiene
 *.md

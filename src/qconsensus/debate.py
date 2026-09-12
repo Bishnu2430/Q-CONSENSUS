@@ -187,6 +187,9 @@ class DebateOrchestrator:
                 "selected_order": selected_order,
                 "selected_policy": selected_policy_random,
                 "basis": "system_prompt_diversity",
+                "agent_ids": agent_ids,
+                "quantum_similarity": order_result.quantum_similarity,
+                "classical_similarity": order_result.classical_similarity,
             },
             prev_hash=prev_hash,
         )
@@ -300,6 +303,9 @@ class DebateOrchestrator:
                 "selected_order": scheduled_order,
                 "selected_policy": selected_policy_sched,
                 "basis": "initial_answer_diversity",
+                "agent_ids": agent_ids,
+                "quantum_similarity": schedule_result.quantum_similarity,
+                "classical_similarity": schedule_result.classical_similarity,
             },
             prev_hash=prev_hash,
         )
@@ -565,6 +571,8 @@ class DebateOrchestrator:
             quantum_weights = [1.0 / n_agents] * n_agents if n_agents else []
             classical_weights = list(quantum_weights)
             qaoa_circuit_info = None
+            q_similarity = np.ones((n_agents, n_agents))
+            c_similarity = np.ones((n_agents, n_agents))
 
         selected_policy_weights = "quantum" if config.quantum.use_quantum_weights else "classical"
         selected_weights = quantum_weights if selected_policy_weights == "quantum" else classical_weights
@@ -580,6 +588,9 @@ class DebateOrchestrator:
                 "quantum_partition": quantum_partition,
                 "classical_partition": classical_partition,
                 "qaoa_circuit": qaoa_circuit_info,
+                "agent_ids": agent_ids,
+                "quantum_similarity": np.asarray(q_similarity).tolist(),
+                "classical_similarity": np.asarray(c_similarity).tolist(),
             },
             prev_hash=prev_hash,
         )

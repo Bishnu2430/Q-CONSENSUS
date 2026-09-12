@@ -58,10 +58,15 @@ def test_debate_runs_all_rounds(tmp_path):
     randomness_event = next(e for e in events if e.event_type == "quantum_randomness")
     assert sorted(randomness_event.payload["selected_order"]) == list(range(len(agents)))
     assert randomness_event.payload["basis"] == "system_prompt_diversity"
+    assert len(randomness_event.payload["quantum_similarity"]) == len(agents)
 
     scheduling_event = next(e for e in events if e.event_type == "quantum_scheduling")
     assert sorted(scheduling_event.payload["selected_order"]) == list(range(len(agents)))
     assert scheduling_event.payload["basis"] == "initial_answer_diversity"
+    assert len(scheduling_event.payload["quantum_similarity"]) == len(agents)
+
+    assert len(weights_event.payload["quantum_similarity"]) == len(agents)
+    assert weights_event.payload["agent_ids"] == [a.agent_id for a in agents]
 
 
 def test_quantum_convergence_can_shorten_a_run(tmp_path):
