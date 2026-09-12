@@ -20,6 +20,15 @@ class QuantumPolicyConfig:
     shots_weights: int = 256
     shots_scheduling: int = 256
 
+    # Quantum-kernel-driven early stop: if agents' round-0 answers already
+    # cluster tightly (avg pairwise similarity >= threshold), skip the
+    # cross-critique/self-revision rounds. Off by default so existing
+    # callers keep their configured max_rounds unless they opt in.
+    use_quantum_convergence: bool = False
+    convergence_similarity_threshold: float = 0.82
+    shots_convergence: int = 256
+    kernel_qubits: int = 4
+
 
 @dataclass(frozen=True)
 class DebateConfig:
