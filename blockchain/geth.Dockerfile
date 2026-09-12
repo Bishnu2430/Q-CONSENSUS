@@ -15,5 +15,12 @@ RUN chmod +x /usr/local/bin/init-geth.sh
 
 EXPOSE 8545 8546 30303
 
-ENTRYPOINT ["sh", "-c"]
-CMD ["mkdir -p ${GETH_HOME}; geth --datadir=${GETH_HOME} init ${GETH_HOME}/genesis.json >/dev/null 2>&1 || true; printf 'ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\n' > /tmp/geth-key && geth account import --datadir=${GETH_HOME} --password=/dev/null /tmp/geth-key >/dev/null 2>&1 || true; rm -f /tmp/geth-key; geth --datadir=${GETH_HOME} --networkid=1337 --http --http.addr=0.0.0.0 --http.port=8545 --http.vhosts=* --http.corsdomain=* --http.api=eth,net,web3,personal,miner,txpool --allow-insecure-unlock --unlock=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266 --password=/dev/null --mine --miner.etherbase=0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266 --nodiscover"]
+# Invoked via "sh <script>" rather than executing it directly: this repo's
+# git config has core.filemode=false (it lives on an NTFS-mounted drive),
+# so the executable bit set above is never actually tracked by git -- a
+# fresh clone, even on ext4, checks the script out as non-executable, and
+# docker-compose.yml bind-mounts the host copy over this one at runtime,
+# overriding the chmod. Running it through sh sidesteps needing the
+# executable bit at all while keeping the bind mount's "edit without
+# rebuilding" convenience.
+ENTRYPOINT ["sh", "/usr/local/bin/init-geth.sh"]

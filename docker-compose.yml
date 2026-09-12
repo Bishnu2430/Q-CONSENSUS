@@ -3,18 +3,28 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     container_name: qconsensus-orchestrator
     env_file:
       - .env
     depends_on:
-      - llama
-      - blockchain
-      - postgres
+      llama:
+        condition: service_healthy
+      blockchain:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
 
   llama:
     image: ghcr.io/ggml-org/llama.cpp:server
@@ -36,6 +46,12 @@ services:
       - "8080:8080"
     volumes:
       - ./models:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
 
   blockchain:
     build:
@@ -47,19 +63,17 @@ services:
     volumes:
       - gethdata:/data
       - ./blockchain/init-geth.sh:/usr/local/bin/init-geth.sh
-
-  postgres:
-    image: postgres:16-alpine
-    container_name: qconsensus-postgres
-    environment:
-      POSTGRES_DB: qconsensus
-      POSTGRES_USER: qconsensus
-      POSTGRES_PASSWORD: qconsensus
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - >-
+          wget -q -O- --header='Content-Type: application/json'
+          --post-data='{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+          http://127.0.0.1:8545 | grep -q result
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
 
 volumes:
-  pgdata:
   gethdata:

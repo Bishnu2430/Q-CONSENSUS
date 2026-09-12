@@ -26,11 +26,22 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY src ./src
 COPY config ./config
-COPY data ./data
 COPY --from=frontend-build /frontend/dist ./frontend-dist
 
 ENV PYTHONPATH=/app
 ENV FRONTEND_DIST_DIR=/app/frontend-dist
+
+# Run as a non-root user so files written into the bind-mounted ./data
+# volume (event logs, etc.) are owned by a normal user on the host instead
+# of root. Override APP_UID/APP_GID at build time if they don't match your
+# host user (see .env.example).
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN groupadd -g "${APP_GID}" appuser \
+    && useradd -m -u "${APP_UID}" -g appuser appuser \
+    && mkdir -p /app/data \
+    && chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8000
 
