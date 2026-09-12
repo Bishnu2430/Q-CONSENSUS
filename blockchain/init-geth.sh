@@ -1,46 +1,38 @@
-#!/bin/bash
-# Initialize geth clique network
+#!/bin/sh
+# Initialize and run the single-node geth clique (PoA) chain used for
+# anchoring. Idempotent: safe to run against an already-initialized
+# datadir (e.g. the gethdata volume surviving a container restart).
+#
+# This is bind-mounted into the container at /usr/local/bin/init-geth.sh
+# by docker-compose.yml, so editing this file takes effect on the next
+# container start without rebuilding the image.
+set -u
 
-set -e
+GETH_HOME="${GETH_HOME:-/data}"
+DEV_ADDRESS="0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+DEV_PRIVATE_KEY="ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
-GETH_HOME="/data"
-GETH_BIN=$(which geth)
+mkdir -p "$GETH_HOME"
 
-# Create genesis.json if doesn't exist
-if [ ! -f "$GETH_HOME/genesis.json" ]; then
-    cat > "$GETH_HOME/genesis.json" <<'EOF'
-{
-  "config": {
-    "chainId": 1337,
-    "homesteadBlock": 0,
-    "eip150Block": 0,
-    "eip155Block": 0,
-    "eip158Block": 0,
-    "byzantiumBlock": 0,
-    "constantinopleBlock": 0,
-    "petersburgBlock": 0,
-    "istanbulBlock": 0,
-    "londonBlock": 0,
-    "clique": {
-      "period": 5,
-      "epoch": 30000
-    }
-  },
-  "difficulty": "0x1",
-  "gasLimit": "0x8000000",
-  "alloc": {
-    "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266": {
-      "balance": "0x200000000000000000000000000000000000000000000000000000000000000"
-    }
-  },
-  "extradata": "0x0000000000000000000000000000000000000000000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb922660000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-}
-EOF
-fi
+# Safe to re-run: geth init no-ops (with a warning) if the datadir already
+# has a genesis block.
+geth --datadir="$GETH_HOME" init "$GETH_HOME/genesis.json" >/dev/null 2>&1 || true
 
-# Initialize if not already done
-if [ ! -d "$GETH_HOME/geth/chaindata" ]; then
-    "$GETH_BIN" --datadir "$GETH_HOME" init "$GETH_HOME/genesis.json"
-fi
+# Import the well-known single-signer dev key if it isn't already in the
+# keystore. account import fails loudly on a duplicate key, which is
+# expected and harmless on every restart after the first.
+key_file="$(mktemp)"
+printf '%s\n' "$DEV_PRIVATE_KEY" > "$key_file"
+geth account import --datadir="$GETH_HOME" --password=/dev/null "$key_file" >/dev/null 2>&1 || true
+rm -f "$key_file"
 
-echo "Geth initialization complete"
+exec geth \
+  --datadir="$GETH_HOME" \
+  --networkid=1337 \
+  --http --http.addr=0.0.0.0 --http.port=8545 \
+  --http.vhosts=* --http.corsdomain=* \
+  --http.api=eth,net,web3,personal,miner,txpool \
+  --allow-insecure-unlock \
+  --unlock="$DEV_ADDRESS" --password=/dev/null \
+  --mine --miner.etherbase="$DEV_ADDRESS" \
+  --nodiscover
