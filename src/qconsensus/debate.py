@@ -4,6 +4,8 @@ import time
 import uuid
 from typing import Dict, List, Optional
 
+import numpy as np
+
 from .contract_anchor import ContractAnchoringClient
 from .debate_policy import build_agent_prompts, build_cross_critique_prompt, build_self_revision_prompt
 from .events import Event, JsonlEventStore, compute_run_commitment
@@ -11,12 +13,12 @@ from .llm_client import LlamaCppClient
 from .quantum import (
     classical_random_bits,
     classical_schedule_scores,
-    classical_weights_from_angles,
     quantum_random_bits,
     quantum_schedule_scores,
-    quantum_weights_from_angles,
 )
 from .quantum_executor import QuantumExecutor
+from .quantum_kernel import average_pairwise_similarity, pairwise_similarity_matrix
+from .quantum_qaoa import build_maxcut_qubo, classical_solve_qubo, solve_qubo_qaoa
 from .types import DebateConfig, DebateMessage, DebateResult
 from .web_context import fetch_web_context
 
@@ -56,6 +58,38 @@ class DebateOrchestrator:
             scored.append((w * len(content), content))
         scored.sort(key=lambda t: t[0], reverse=True)
         return scored[0][1] if scored else ""
+
+    @staticmethod
+    def _weights_from_partition(partition: List[int], similarity: np.ndarray) -> List[float]:
+        """Turn a Max-Cut bipartition into per-agent weights.
+
+        Agents in the larger ("consensus") partition get full base weight;
+        agents in the smaller ("dissenting") partition are down-weighted.
+        Within each group, weight is further scaled by how similar an agent
+        is to its own group -- an agent that only loosely matches its
+        cluster still counts less than one that matches it closely.
+        """
+        n = len(partition)
+        if n == 0:
+            return []
+        if n == 1:
+            return [1.0]
+
+        group_counts = {0: partition.count(0), 1: partition.count(1)}
+        majority_label = 0 if group_counts[0] >= group_counts[1] else 1
+
+        raw: List[float] = []
+        for i in range(n):
+            own_group = partition[i]
+            peers = [j for j in range(n) if j != i and partition[j] == own_group]
+            cohesion = float(np.mean([similarity[i, j] for j in peers])) if peers else 0.5
+            base = 1.0 if own_group == majority_label else 0.4
+            raw.append(base * (0.5 + 0.5 * cohesion))
+
+        total = sum(raw)
+        if total <= 0:
+            return [1.0 / n] * n
+        return [r / total for r in raw]
 
     def run(
         self,
@@ -248,7 +282,43 @@ class DebateOrchestrator:
             )
 
 
-        if config.max_rounds >= 2:
+        effective_max_rounds = config.max_rounds
+        if config.quantum.use_quantum_convergence and n_agents >= 2 and config.max_rounds >= 2:
+            q_conv_matrix = pairwise_similarity_matrix(
+                agent_ids=agent_ids,
+                texts=initial_answers,
+                kind="quantum",
+                executor=self.quantum_executor,
+                n_qubits=config.quantum.kernel_qubits,
+                shots=config.quantum.shots_convergence,
+                seed=seed,
+            )
+            c_conv_matrix = pairwise_similarity_matrix(
+                agent_ids=agent_ids, texts=initial_answers, kind="classical"
+            )
+            q_avg_similarity = average_pairwise_similarity(q_conv_matrix)
+            c_avg_similarity = average_pairwise_similarity(c_conv_matrix)
+            avg_similarity = q_avg_similarity
+            converged = avg_similarity >= config.quantum.convergence_similarity_threshold
+            if converged:
+                effective_max_rounds = 1
+
+            prev_hash = self._persist_event(
+                run_id=run_id,
+                event_type="quantum_convergence_check",
+                payload={
+                    "seed_used": seed,
+                    "quantum_avg_similarity": q_avg_similarity,
+                    "classical_avg_similarity": c_avg_similarity,
+                    "threshold": config.quantum.convergence_similarity_threshold,
+                    "converged": converged,
+                    "configured_max_rounds": config.max_rounds,
+                    "effective_max_rounds": effective_max_rounds,
+                },
+                prev_hash=prev_hash,
+            )
+
+        if effective_max_rounds >= 2:
             for idx in scheduled_order:
                 agent = config.agents[idx]
                 own_answer = initial_answers.get(agent.agent_id, "")
@@ -324,7 +394,7 @@ class DebateOrchestrator:
                 )
 
 
-        if config.max_rounds >= 3:
+        if effective_max_rounds >= 3:
             for idx in scheduled_order:
                 agent = config.agents[idx]
                 own_answer = initial_answers.get(agent.agent_id, "")
@@ -405,22 +475,73 @@ class DebateOrchestrator:
             event_type="consensus_started",
             payload={
                 "agent_count": n_agents,
-                "round_count": config.max_rounds,
+                "round_count": effective_max_rounds,
+                "configured_max_rounds": config.max_rounds,
                 "use_quantum_weights": config.quantum.use_quantum_weights,
             },
             prev_hash=prev_hash,
         )
-        
+
         consensus_start_time = time.time()
 
-        angles = [0.3 + (i * 0.7) for i in range(n_agents)]
-        quantum_weights = quantum_weights_from_angles(
-            angles=angles,
-            executor=self.quantum_executor,
-            shots=config.quantum.shots_weights,
-            seed=seed,
-        )
-        classical_weights = classical_weights_from_angles(angles=angles)
+        candidate_answers = revised_answers if revised_answers else initial_answers
+
+        # Consensus weighting: cluster agents by answer similarity via a
+        # Max-Cut QUBO solved with QAOA (cutting apart dissimilar pairs
+        # concentrates mutually-agreeing agents into the same partition).
+        # The majority partition is the "consensus cluster" and gets full
+        # weight; the minority partition is down-weighted as dissenting
+        # outliers. This decides which agent's answer becomes the final
+        # answer -- a real, checkable effect of the quantum computation,
+        # not a random tiebreaker.
+        if n_agents >= 2:
+            q_similarity = pairwise_similarity_matrix(
+                agent_ids=agent_ids,
+                texts=candidate_answers,
+                kind="quantum",
+                executor=self.quantum_executor,
+                n_qubits=config.quantum.kernel_qubits,
+                shots=config.quantum.shots_weights,
+                seed=seed,
+            )
+            c_similarity = pairwise_similarity_matrix(
+                agent_ids=agent_ids, texts=candidate_answers, kind="classical"
+            )
+
+            q_dissimilarity = 1.0 - q_similarity
+            np.fill_diagonal(q_dissimilarity, 0.0)
+            q_qubo = build_maxcut_qubo(q_dissimilarity)
+            q_qaoa_result = solve_qubo_qaoa(
+                Q=q_qubo,
+                executor=self.quantum_executor,
+                p=1,
+                shots=config.quantum.shots_weights,
+                maxiter=20,
+                seed=seed,
+            )
+            quantum_partition = q_qaoa_result.bitstring
+            quantum_weights = self._weights_from_partition(quantum_partition, q_similarity)
+
+            c_dissimilarity = 1.0 - c_similarity
+            np.fill_diagonal(c_dissimilarity, 0.0)
+            c_qubo = build_maxcut_qubo(c_dissimilarity)
+            classical_partition, classical_cost = classical_solve_qubo(Q=c_qubo, seed=seed)
+            classical_weights = self._weights_from_partition(classical_partition, c_similarity)
+
+            qaoa_circuit_info = {
+                "num_qubits": int(q_qubo.shape[0]),
+                "qaoa_layers": 1,
+                "optimized_params": q_qaoa_result.params,
+                "measurement_counts": q_qaoa_result.counts,
+                "qubo_cost": q_qaoa_result.cost,
+            }
+        else:
+            quantum_partition = [0] * n_agents
+            classical_partition = [0] * n_agents
+            quantum_weights = [1.0 / n_agents] * n_agents if n_agents else []
+            classical_weights = list(quantum_weights)
+            qaoa_circuit_info = None
+
         selected_policy_weights = "quantum" if config.quantum.use_quantum_weights else "classical"
         selected_weights = quantum_weights if selected_policy_weights == "quantum" else classical_weights
 
@@ -428,16 +549,17 @@ class DebateOrchestrator:
             run_id=run_id,
             event_type="consensus_weights",
             payload={
-                "angles": angles,
                 "quantum_weights": quantum_weights,
                 "classical_weights": classical_weights,
                 "selected_weights": selected_weights,
                 "selected_policy": selected_policy_weights,
+                "quantum_partition": quantum_partition,
+                "classical_partition": classical_partition,
+                "qaoa_circuit": qaoa_circuit_info,
             },
             prev_hash=prev_hash,
         )
 
-        candidate_answers = revised_answers if revised_answers else initial_answers
         quantum_baseline_answer = self._pick_final_by_weights(agent_ids, candidate_answers, quantum_weights)
         classical_baseline_answer = self._pick_final_by_weights(agent_ids, candidate_answers, classical_weights)
         final_answer = quantum_baseline_answer if selected_policy_weights == "quantum" else classical_baseline_answer

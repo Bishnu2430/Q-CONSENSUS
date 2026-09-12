@@ -36,4 +36,3 @@ data/
 
 # User-requested git hygiene
 *.md
-tests/

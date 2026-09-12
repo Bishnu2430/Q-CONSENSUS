@@ -50,52 +50,6 @@ def quantum_random_bits(*, n_bits: int, executor: QuantumExecutor, seed: Optiona
     return QuantumRandomResult(bits=bits, seed_used=seed_used)
 
 
-def quantum_weights_from_angles(
-    *,
-    angles: List[float],
-    executor: QuantumExecutor,
-    shots: int = 256,
-    seed: Optional[int] = None,
-) -> List[float]:
-    """Produce a weight per agent using a single-qubit Ry measurement."""
-    if shots < 1:
-        raise ValueError("shots must be >= 1")
-
-    seed_used = seed if seed is not None else executor.current_seed
-
-    circuits: List[QuantumCircuit] = []
-    for a in angles:
-        qc = QuantumCircuit(1, 1)
-        qc.ry(float(a), 0)
-        qc.measure(0, 0)
-        circuits.append(qc)
-
-    counts_list = executor.execute_batch(circuits, shots=shots, seed=seed_used)
-
-    weights: List[float] = []
-    for counts in counts_list:
-        c1 = counts.get("1", 0)
-        weights.append(float(c1 / shots))
-
-    total = float(np.sum(weights))
-    if total <= 0:
-        return [1.0 / len(weights)] * len(weights)
-    return [w / total for w in weights]
-
-
-def classical_weights_from_angles(*, angles: List[float]) -> List[float]:
-    if not angles:
-        return []
-
-    arr = np.array(angles, dtype=float)
-    shifted = arr - float(np.max(arr))
-    expv = np.exp(shifted)
-    total = float(np.sum(expv))
-    if total <= 0:
-        return [1.0 / len(angles)] * len(angles)
-    return [float(x / total) for x in expv]
-
-
 def _phase_from_seed(seed: int, idx: int) -> float:
     digest = hashlib.sha256(f"{seed}:{idx}".encode("utf-8")).hexdigest()
     raw = int(digest[:8], 16)
