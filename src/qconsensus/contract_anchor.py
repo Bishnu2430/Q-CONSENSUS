@@ -6,22 +6,18 @@ that stores run commitments on-chain via contract storage.
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from web3 import Web3
+from web3.exceptions import BadFunctionCallOutput, ContractLogicError
 try:
     # Web3 v7+
     from web3.middleware import ExtraDataToPOAMiddleware as _poa_middleware
 except Exception:  # pragma: no cover - compatibility fallback
     # Web3 v6
     from web3.middleware import geth_poa_middleware as _poa_middleware
-
-
-# Minimal Solidity contract for anchoring (simplified)
-ANCHOR_CONTRACT_BYTECODE = "6080604052604051610231380380610231833981016040819052610022916100f3565b60005b82518110156100e9576000838281518110610040576100406101f0565b602002602001015190503373ffffffffffffffffffffffffffffffffffffffff168173ffffffffffffffffffffffffffffffffffffffff16146100b35760405162461bcd60e51b815260206004820152601d60248201527f4f6e6c79206f776e657220636f756c6420616e636f726100000000000000604482015260640160405180910390fd5b6001600354600084815260200190815260200160002081905550806100d781610206565b915050610025565b50505061023f565b6000602082840312156101055761010561021b565b5b60006101128482850161012b565b91505092915050565b60008151905061012a81610228565b92915050565b60006020828403121561014657610146610236565b5b600061015484828501610122565b91505092915050565b600061016882610203565b9050919050565b61017981610158565b82525050565b6000819050919050565b61019281610200565b82525050565b60006080820190506101ad6000830187610170565b6101ba6020830186610189565b6101c76040830185610189565b6101d46060830184610170565b95945050505050565b600080fd5b600080fd5b600080fd5b600080fd5b600080fd5b73ffffffffffffffffffffffffffffffffffffffff81169050919050565b600061021d826101f3565b9050919050565b60008282526020820190509291505056fea26469706673582212204d7375727645717569706d656e7421000000000000000000000000000000000064736f6c63430008040033"
 
 
 @dataclass(frozen=True)
@@ -97,45 +93,42 @@ class ContractAnchoringClient:
             )
         )
 
-    def deploy_contract(self) -> str:
-        if self.config.contract_address:
-            return self.config.contract_address
+    def has_code(self, address: str) -> bool:
+        """Return True if the given address currently has deployed contract code.
 
-        acct = self.w3.eth.account.from_key(self.config.private_key)
-        nonce = self.w3.eth.get_transaction_count(acct.address)
-
-        tx = {
-            "nonce": nonce,
-            "gasPrice": self.w3.eth.gas_price,
-            "gas": 3000000,
-            "chainId": self.config.chain_id,
-            "data": ANCHOR_CONTRACT_BYTECODE,
-        }
-
-        signed = self.w3.eth.account.sign_transaction(tx, private_key=self.config.private_key)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
-
-        if receipt.status != 1 or not receipt.contractAddress:
-            raise RuntimeError(f"Contract deployment failed, tx={tx_hash.hex()}")
-
-        return receipt.contractAddress
+        Used to detect a stale ANCHOR_CONTRACT_ADDRESS left over in .env after the
+        chain's data volume was wiped/recreated but the address was never cleared.
+        """
+        checksum_address = Web3.to_checksum_address(address)
+        code = self.w3.eth.get_code(checksum_address)
+        return len(code) > 0
 
     def anchor_commitment(self, *, run_id: str, commitment: str, contract_address: str) -> str:
-        """Anchor a commitment to the contract."""
+        """Anchor a commitment to the contract.
+
+        Raises if the contract has no code at the given address, or if the
+        transaction is submitted but reverts on-chain — a caller must not treat
+        a returned tx hash as proof the commitment was actually stored.
+        """
         run_id_bytes = Web3.keccak(text=run_id)
 
         raw_commitment = bytes.fromhex(commitment.lstrip("0x"))
         if len(raw_commitment) != 32:
             raise ValueError("commitment must be exactly 32 bytes (sha256 hex)")
-        commitment_bytes = raw_commitment
 
-        contract = self.w3.eth.contract(address=contract_address, abi=self.contract_abi)
+        checksum_address = Web3.to_checksum_address(contract_address)
+        if not self.has_code(checksum_address):
+            raise RuntimeError(
+                f"No contract deployed at {checksum_address} — redeploy via "
+                "scripts/deploy_contract.py and update ANCHOR_CONTRACT_ADDRESS"
+            )
+
+        contract = self.w3.eth.contract(address=checksum_address, abi=self.contract_abi)
 
         acct = self.w3.eth.account.from_key(self.config.private_key)
         nonce = self.w3.eth.get_transaction_count(acct.address)
 
-        tx = contract.functions.commit(run_id_bytes, commitment_bytes).build_transaction(
+        tx = contract.functions.commit(run_id_bytes, raw_commitment).build_transaction(
             {
                 "nonce": nonce,
                 "gasPrice": self.w3.eth.gas_price,
@@ -146,19 +139,44 @@ class ContractAnchoringClient:
 
         signed = self.w3.eth.account.sign_transaction(tx, private_key=self.config.private_key)
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+
+        if receipt.status != 1:
+            raise RuntimeError(f"anchor commit transaction reverted, tx={tx_hash.hex()}")
 
         return tx_hash.hex()
 
-    def verify_commitment(self, *, run_id: str, contract_address: str) -> Optional[str]:
-        """Verify a commitment was anchored on-chain."""
+    def verify_commitment(self, *, run_id: str, contract_address: str) -> Dict[str, Any]:
+        """Look up a commitment on-chain.
+
+        Returns {"commitment": <hex or None>, "error": <reason or None>}.
+        `error` is only set when the lookup itself could not be completed
+        (stale/invalid address, RPC failure, ABI mismatch) — a clean "not
+        anchored yet" result has `error: None` and `commitment: None`, so
+        callers can tell "not found" apart from "couldn't check".
+        """
+        try:
+            checksum_address = Web3.to_checksum_address(contract_address)
+        except ValueError as exc:
+            return {"commitment": None, "error": f"invalid_contract_address: {exc}"}
+
+        try:
+            if not self.has_code(checksum_address):
+                return {"commitment": None, "error": "no_contract_at_address"}
+        except Exception as exc:  # RPC connectivity issue, etc.
+            return {"commitment": None, "error": f"rpc_error_checking_code: {exc}"}
+
         run_id_bytes = Web3.keccak(text=run_id)
-        contract = self.w3.eth.contract(address=contract_address, abi=self.contract_abi)
+        contract = self.w3.eth.contract(address=checksum_address, abi=self.contract_abi)
 
         try:
             result = contract.functions.getCommitment(run_id_bytes).call()
-            if result[0] != b"\x00" * 32:
-                return result[0].hex()
-        except Exception:
-            pass
+        except ContractLogicError as exc:
+            return {"commitment": None, "error": f"call_reverted: {exc}"}
+        except (BadFunctionCallOutput, ValueError) as exc:
+            return {"commitment": None, "error": f"abi_mismatch_or_rpc_error: {exc}"}
 
-        return None
+        if result[0] == b"\x00" * 32:
+            return {"commitment": None, "error": None}
+
+        return {"commitment": result[0].hex(), "error": None}

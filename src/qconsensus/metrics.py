@@ -40,8 +40,16 @@ class ChainVerifier:
             return {"verified": False, "reason": "No event store configured"}
 
         # Verify on-chain
-        on_chain_commitment = self.anchor_client.verify_commitment(run_id=run_id, contract_address=contract_address)
+        lookup = self.anchor_client.verify_commitment(run_id=run_id, contract_address=contract_address)
 
+        if lookup.get("error"):
+            return {
+                "verified": False,
+                "reason": f"On-chain lookup failed: {lookup['error']}",
+                "expected": commitment,
+            }
+
+        on_chain_commitment = lookup.get("commitment")
         if on_chain_commitment is None:
             return {"verified": False, "reason": "Commitment not found on-chain", "expected": commitment}
 

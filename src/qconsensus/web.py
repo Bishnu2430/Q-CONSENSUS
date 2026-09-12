@@ -752,6 +752,15 @@ async function runDebateAsync() {
     def status() -> dict:
         _refresh_anchor_client()
         vm = psutil.virtual_memory()
+
+        contract_deployed: Optional[bool] = None
+        contract_code_check_error: Optional[str] = None
+        if contract_client and anchor_contract_address:
+            try:
+                contract_deployed = contract_client.has_code(anchor_contract_address)
+            except Exception as exc:  # RPC hiccup, invalid address, etc.
+                contract_code_check_error = str(exc)
+
         return {
             "cpu_percent": psutil.cpu_percent(interval=0.0),
             "mem_total": vm.total,
@@ -761,6 +770,12 @@ async function runDebateAsync() {
             "agents_config_path": agents_path,
             "contract_anchor_enabled": bool(contract_client and anchor_contract_address),
             "contract_anchor_init_error": contract_init_error,
+            "contract_anchor_address": anchor_contract_address,
+            # False here means ANCHOR_CONTRACT_ADDRESS points at a chain that no
+            # longer has this contract (e.g. the geth data volume was reset) —
+            # anchoring will fail until scripts/deploy_contract.py is re-run.
+            "contract_deployed": contract_deployed,
+            "contract_code_check_error": contract_code_check_error,
             "frontend_dist_dir": str(frontend_dist),
             "frontend_index_exists": frontend_index.exists(),
         }
