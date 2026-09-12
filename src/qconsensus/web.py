@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import queue
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import psutil
 import yaml
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -21,8 +24,13 @@ from .events import JsonlEventStore
 from .llm_client import LlamaCppClient
 from .metrics import ChainVerifier, MetricsCollector
 from .quantum_executor import QuantumExecutor
+from .reconcile import reconcile_incomplete_runs
 from .replay import DebateReplayer
+from .security import InMemoryRateLimiter
 from .types import AgentSpec, DebateConfig, QuantumPolicyConfig
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 
 class RunRequest(BaseModel):
@@ -144,6 +152,34 @@ def _build_config(req: RunRequest, agents: List[AgentSpec]) -> DebateConfig:
 def create_app() -> FastAPI:
     app = FastAPI(title="Q-CONSENSUS")
 
+    cors_origins_env = os.getenv("CORS_ALLOW_ORIGINS", "*")
+    allow_origins = ["*"] if cors_origins_env == "*" else [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    api_key = os.getenv("API_KEY")  # unset (default) = auth disabled, matches today's open behavior
+    run_rate_limiter = InMemoryRateLimiter(
+        max_requests=int(os.getenv("RUN_RATE_LIMIT_MAX", "10")),
+        window_seconds=float(os.getenv("RUN_RATE_LIMIT_WINDOW_SECONDS", "60")),
+    )
+    _protected_paths = {"/api/run", "/api/run_async"}
+
+    @app.middleware("http")
+    async def _guard_run_endpoints(request: Request, call_next):
+        if request.url.path in _protected_paths:
+            if api_key and request.headers.get("X-API-Key") != api_key:
+                return JSONResponse(status_code=401, content={"detail": "missing or invalid API key"})
+            client_ip = request.client.host if request.client else "unknown"
+            if not run_rate_limiter.allow(client_ip):
+                logger.warning("[RATE_LIMIT] client_ip=%s path=%s exceeded limit", client_ip, request.url.path)
+                return JSONResponse(status_code=429, content={"detail": "rate limit exceeded, try again shortly"})
+        return await call_next(request)
+
     repo_root = Path(__file__).resolve().parents[2]
     local_frontend_dist = repo_root / "consensus-command-main" / "dist"
     configured_frontend_dist = os.getenv("FRONTEND_DIST_DIR")
@@ -165,6 +201,18 @@ def create_app() -> FastAPI:
 
     event_dir = os.getenv("EVENT_STORE_DIR") or os.path.join("data", "events")
     store = JsonlEventStore(event_dir)
+    logger.info("[STARTUP] event_dir=%s", event_dir)
+
+    try:
+        reconcile_report = reconcile_incomplete_runs(store)
+        if reconcile_report.marked_crashed:
+            logger.warning(
+                "[STARTUP] reconciled %d incomplete run(s) out of %d total (likely killed mid-run on a prior process exit)",
+                reconcile_report.marked_crashed,
+                reconcile_report.total_runs,
+            )
+    except Exception:  # pragma: no cover - startup resilience
+        logger.exception("[STARTUP] event store reconciliation failed, continuing without it")
 
     llm = LlamaCppClient()
     qexec = QuantumExecutor({"base_seed": int(os.getenv("QC_BASE_SEED", "42"))})
@@ -176,10 +224,12 @@ def create_app() -> FastAPI:
         # Do not fail app startup if blockchain is temporarily unavailable.
         contract_client = None
         contract_init_error = str(exc)
+        logger.warning("[STARTUP] contract anchor client unavailable: %s", contract_init_error)
     anchor_contract_address = os.getenv("ANCHOR_CONTRACT_ADDRESS")
 
     agents_path = os.getenv("AGENTS_CONFIG_PATH", os.path.join("config", "agents.yaml"))
     agents = _load_agents_from_yaml(agents_path)
+    logger.info("[STARTUP] loaded %d agent(s) from %s", len(agents), agents_path)
 
     metrics = MetricsCollector()
     verifier = ChainVerifier(anchor_client=contract_client, event_store=store)
@@ -249,6 +299,7 @@ def create_app() -> FastAPI:
                 "max_rounds": cfg.max_rounds,
             },
         )
+        logger.info("[RUN] run_id=%s status=running agent_count=%d max_rounds=%d", run_key, len(cfg.agents), cfg.max_rounds)
         try:
             result = orch.run(
                 user_query=req.query,
@@ -269,6 +320,7 @@ def create_app() -> FastAPI:
                     "anchor_tx_hash": result.anchor_tx_hash,
                 },
             )
+            logger.info("[RUN] run_id=%s status=completed commitment=%s", run_key, result.commitment)
         except Exception as exc:  # pragma: no cover
             _set_run_state(
                 run_key,
@@ -278,6 +330,7 @@ def create_app() -> FastAPI:
                     "error": str(exc),
                 },
             )
+            logger.error("[RUN] run_id=%s status=failed error=%s", run_key, exc)
 
     @app.get("/", response_class=HTMLResponse, response_model=None)
     def index():
@@ -783,13 +836,18 @@ async function runDebateAsync() {
     @app.post("/api/run", response_model=RunResponse)
     def run(req: RunRequest) -> RunResponse:
         cfg = _build_config(req, agents)
-        result = orch.run(
-            user_query=req.query,
-            config=cfg,
-            enable_web_context=req.enable_web_context,
-            web_context_query=req.web_context_query,
-            web_context_max_items=req.web_context_max_items,
-        )
+        logger.info("[RUN] sync run starting agent_count=%d max_rounds=%d", len(cfg.agents), cfg.max_rounds)
+        try:
+            result = orch.run(
+                user_query=req.query,
+                config=cfg,
+                enable_web_context=req.enable_web_context,
+                web_context_query=req.web_context_query,
+                web_context_max_items=req.web_context_max_items,
+            )
+        except Exception:
+            logger.exception("[RUN] sync run failed before producing a run_id")
+            raise
         _record_metrics(result.run_id, cfg, len(result.messages))
         _set_run_state(
             result.run_id,
@@ -801,6 +859,7 @@ async function runDebateAsync() {
                 "anchor_tx_hash": result.anchor_tx_hash,
             },
         )
+        logger.info("[RUN] run_id=%s status=completed commitment=%s", result.run_id, result.commitment)
         return RunResponse(
             run_id=result.run_id,
             final_answer=result.final_answer,
@@ -810,7 +869,7 @@ async function runDebateAsync() {
 
     @app.post("/api/run_async", response_model=AsyncRunResponse)
     def run_async(req: RunRequest) -> AsyncRunResponse:
-        run_key = f"pending-{int(time.time() * 1000)}"
+        run_key = str(uuid.uuid4())
         cfg = _build_config(req, agents)
         _set_run_state(
             run_key,

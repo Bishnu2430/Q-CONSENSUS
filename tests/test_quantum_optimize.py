@@ -12,6 +12,7 @@ from src.qconsensus.quantum_qaoa import (
     classical_solve_qubo,
     solve_qubo_qaoa,
 )
+from src.qconsensus.quantum_ordering import diversity_order
 
 
 def test_quantum_kernel_identical_text_is_similarity_one():
@@ -93,3 +94,26 @@ def test_solve_qubo_qaoa_finds_a_valid_cut_on_small_instance():
     # simulator with few iterations isn't guaranteed optimal, but it must
     # never do worse than the two possible outcomes for this tiny instance.
     assert result.cost in (-1.0, 0.0)
+
+
+def test_diversity_order_single_agent_is_identity():
+    qexec = QuantumExecutor({"base_seed": 1})
+    result = diversity_order(
+        agent_ids=["solo"], texts={"solo": "only agent"}, executor=qexec
+    )
+    assert result.quantum_order == [0]
+    assert result.classical_order == [0]
+
+
+def test_diversity_order_covers_every_agent_exactly_once():
+    qexec = QuantumExecutor({"base_seed": 5})
+    agent_ids = ["a", "b", "c", "d"]
+    texts = {
+        "a": "the proposer offers a direct solution",
+        "b": "the skeptic stress-tests every claim",
+        "c": "the verifier checks correctness explicitly",
+        "d": "the optimizer minimizes complexity and risk",
+    }
+    result = diversity_order(agent_ids=agent_ids, texts=texts, executor=qexec, shots=128, maxiter=10)
+    assert sorted(result.quantum_order) == list(range(4))
+    assert sorted(result.classical_order) == list(range(4))
