@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Dict, List, Optional
@@ -10,18 +11,14 @@ from .contract_anchor import ContractAnchoringClient
 from .debate_policy import build_agent_prompts, build_cross_critique_prompt, build_self_revision_prompt
 from .events import Event, JsonlEventStore, compute_run_commitment
 from .llm_client import LlamaCppClient
-from .quantum import (
-    classical_random_bits,
-    classical_schedule_scores,
-    quantum_random_bits,
-    quantum_schedule_scores,
-)
 from .quantum_executor import QuantumExecutor
 from .quantum_kernel import average_pairwise_similarity, pairwise_similarity_matrix
+from .quantum_ordering import diversity_order
 from .quantum_qaoa import build_maxcut_qubo, classical_solve_qubo, solve_qubo_qaoa
 from .types import DebateConfig, DebateMessage, DebateResult
 from .web_context import fetch_web_context
 
+logger = logging.getLogger(__name__)
 
 
 class DebateOrchestrator:
@@ -44,10 +41,6 @@ class DebateOrchestrator:
         ev = Event.create(run_id=run_id, event_type=event_type, payload=payload, prev_event_hash=prev_hash)
         self.event_store.append(ev)
         return ev.event_hash
-
-    @staticmethod
-    def _build_order_from_scores(scores: List[float], n_agents: int) -> List[int]:
-        return sorted(range(n_agents), key=lambda i: scores[i], reverse=True)
 
     @staticmethod
     def _pick_final_by_weights(agent_ids: List[str], answers: Dict[str, str], weights: List[float]) -> str:
@@ -162,44 +155,38 @@ class DebateOrchestrator:
         n_agents = len(config.agents)
         agent_ids = [a.agent_id for a in config.agents]
 
-        q_random = quantum_random_bits(n_bits=n_agents, executor=self.quantum_executor, seed=seed)
-        c_random = classical_random_bits(n_bits=n_agents, seed=seed)
-        quantum_order = sorted(range(n_agents), key=lambda i: q_random.bits[i])
-        classical_order = sorted(range(n_agents), key=lambda i: c_random[i])
+        # Round-0 speaking order: split agents into two mutually-dissimilar
+        # clusters (by system-prompt content, the only thing available
+        # before any answer exists) via a QAOA-solved Max-Cut, then
+        # interleave the clusters. Adjacent speakers tend to represent
+        # different perspectives -- a real, checkable ordering criterion
+        # instead of a random bit.
+        system_prompts = {a.agent_id: a.system_prompt for a in config.agents}
+        order_result = diversity_order(
+            agent_ids=agent_ids,
+            texts=system_prompts,
+            executor=self.quantum_executor,
+            n_qubits=config.quantum.kernel_qubits,
+            shots=config.quantum.shots_randomness if config.quantum.shots_randomness > 1 else 256,
+            seed=seed,
+        )
         selected_policy_random = "quantum" if config.quantum.use_quantum_randomness else "classical"
-        selected_order = quantum_order if selected_policy_random == "quantum" else classical_order
+        selected_order = (
+            order_result.quantum_order if selected_policy_random == "quantum" else order_result.classical_order
+        )
 
         prev_hash = self._persist_event(
             run_id=run_id,
             event_type="quantum_randomness",
             payload={
                 "seed_used": seed,
-                "quantum_bits": q_random.bits,
-                "classical_bits": c_random,
-                "quantum_order": quantum_order,
-                "classical_order": classical_order,
+                "quantum_partition": order_result.quantum_partition,
+                "classical_partition": order_result.classical_partition,
+                "quantum_order": order_result.quantum_order,
+                "classical_order": order_result.classical_order,
                 "selected_order": selected_order,
                 "selected_policy": selected_policy_random,
-            },
-            prev_hash=prev_hash,
-        )
-
-        q_sched = quantum_schedule_scores(n_agents=n_agents, executor=self.quantum_executor, shots=config.quantum.shots_scheduling, seed=seed)
-        c_sched = classical_schedule_scores(n_agents=n_agents, seed=seed)
-        selected_policy_sched = "quantum" if config.quantum.use_quantum_scheduling else "classical"
-        selected_sched = q_sched if selected_policy_sched == "quantum" else c_sched
-        scheduled_order = self._build_order_from_scores(selected_sched, n_agents)
-
-        prev_hash = self._persist_event(
-            run_id=run_id,
-            event_type="quantum_scheduling",
-            payload={
-                "seed_used": seed,
-                "quantum_scores": q_sched,
-                "classical_scores": c_sched,
-                "selected_scores": selected_sched,
-                "selected_order": scheduled_order,
-                "selected_policy": selected_policy_sched,
+                "basis": "system_prompt_diversity",
             },
             prev_hash=prev_hash,
         )
@@ -254,6 +241,7 @@ class DebateOrchestrator:
                 
                 initial_answers[agent.agent_id] = content
             except Exception as e:
+                logger.error("[DEBATE] run_id=%s agent_id=%s round_idx=0 llm_error=%s", run_id, agent.agent_id, e)
                 prev_hash = self._persist_event(
                     run_id=run_id,
                     event_type="llm_error",
@@ -281,6 +269,40 @@ class DebateOrchestrator:
                 prev_hash=prev_hash,
             )
 
+
+        # Critique/revision order: now that round 0 produced real answers,
+        # base the scheduling order on *answer* diversity rather than the
+        # system-prompt-only signal used for round 0 -- agents whose
+        # answers landed in different clusters get interleaved so critique
+        # naturally alternates between differing viewpoints.
+        schedule_result = diversity_order(
+            agent_ids=agent_ids,
+            texts=initial_answers,
+            executor=self.quantum_executor,
+            n_qubits=config.quantum.kernel_qubits,
+            shots=config.quantum.shots_scheduling,
+            seed=seed,
+        )
+        selected_policy_sched = "quantum" if config.quantum.use_quantum_scheduling else "classical"
+        scheduled_order = (
+            schedule_result.quantum_order if selected_policy_sched == "quantum" else schedule_result.classical_order
+        )
+
+        prev_hash = self._persist_event(
+            run_id=run_id,
+            event_type="quantum_scheduling",
+            payload={
+                "seed_used": seed,
+                "quantum_partition": schedule_result.quantum_partition,
+                "classical_partition": schedule_result.classical_partition,
+                "quantum_order": schedule_result.quantum_order,
+                "classical_order": schedule_result.classical_order,
+                "selected_order": scheduled_order,
+                "selected_policy": selected_policy_sched,
+                "basis": "initial_answer_diversity",
+            },
+            prev_hash=prev_hash,
+        )
 
         effective_max_rounds = config.max_rounds
         if config.quantum.use_quantum_convergence and n_agents >= 2 and config.max_rounds >= 2:
@@ -368,6 +390,7 @@ class DebateOrchestrator:
                     
                     critiques[agent.agent_id] = content
                 except Exception as e:
+                    logger.error("[DEBATE] run_id=%s agent_id=%s round_idx=1 llm_error=%s", run_id, agent.agent_id, e)
                     prev_hash = self._persist_event(
                         run_id=run_id,
                         event_type="llm_error",
@@ -444,6 +467,7 @@ class DebateOrchestrator:
                     
                     revised_answers[agent.agent_id] = content
                 except Exception as e:
+                    logger.error("[DEBATE] run_id=%s agent_id=%s round_idx=2 llm_error=%s", run_id, agent.agent_id, e)
                     prev_hash = self._persist_event(
                         run_id=run_id,
                         event_type="llm_error",
@@ -603,6 +627,7 @@ class DebateOrchestrator:
                 )
             except Exception as exc:  # pragma: no cover - defensive path
                 anchor_error = str(exc)
+                logger.warning("[DEBATE] run_id=%s anchor_error=%s", run_id, anchor_error)
 
         prev_hash = self.event_store.get_tail_hash(run_id)
         prev_hash = self._persist_event(

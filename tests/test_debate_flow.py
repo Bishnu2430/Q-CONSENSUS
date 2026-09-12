@@ -55,6 +55,14 @@ def test_debate_runs_all_rounds(tmp_path):
     assert len(weights_event.payload["quantum_weights"]) == len(agents)
     assert abs(sum(weights_event.payload["quantum_weights"]) - 1.0) < 1e-6
 
+    randomness_event = next(e for e in events if e.event_type == "quantum_randomness")
+    assert sorted(randomness_event.payload["selected_order"]) == list(range(len(agents)))
+    assert randomness_event.payload["basis"] == "system_prompt_diversity"
+
+    scheduling_event = next(e for e in events if e.event_type == "quantum_scheduling")
+    assert sorted(scheduling_event.payload["selected_order"]) == list(range(len(agents)))
+    assert scheduling_event.payload["basis"] == "initial_answer_diversity"
+
 
 def test_quantum_convergence_can_shorten_a_run(tmp_path):
     store = JsonlEventStore(str(tmp_path / "events"))

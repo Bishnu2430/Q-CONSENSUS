@@ -155,6 +155,16 @@ class JsonlEventStore:
                     )
                     continue
 
+    def list_run_ids(self) -> list[str]:
+        """List every run_id that has an event file in this store."""
+        if not os.path.isdir(self.base_dir):
+            return []
+        return [
+            name[: -len(".jsonl")]
+            for name in os.listdir(self.base_dir)
+            if name.endswith(".jsonl")
+        ]
+
     def get_tail_hash(self, run_id: str) -> Optional[str]:
         last: Optional[Event] = None
         for last in self.iter_events(run_id):
