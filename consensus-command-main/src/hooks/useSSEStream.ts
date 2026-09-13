@@ -31,6 +31,8 @@ function normalizeSseEvent(raw: unknown): StreamEvent | null {
       ? (src.payload as Record<string, unknown>)
       : { value: src.payload ?? null };
 
+  const prevEventHash: string | null =
+    typeof src.prev_event_hash === "string" ? src.prev_event_hash : null;
   const event: StreamEvent = {
     event_id:
       typeof src.event_id === "string" && src.event_id.length > 0
@@ -41,10 +43,7 @@ function normalizeSseEvent(raw: unknown): StreamEvent | null {
     payload,
     ts_unix_ms: typeof src.ts_unix_ms === "number" ? src.ts_unix_ms : ts,
     ts: typeof src.ts === "string" || typeof src.ts === "number" ? src.ts : ts,
-    prev_event_hash:
-      typeof src.prev_event_hash === "string" || src.prev_event_hash === null
-        ? src.prev_event_hash
-        : null,
+    prev_event_hash: prevEventHash,
     event_hash: typeof src.event_hash === "string" ? src.event_hash : undefined,
   };
 

@@ -1,7 +1,9 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAppStore } from "@/store/appStore";
-import { Search, ArrowDown, ArrowUp, X } from "lucide-react";
+import { useTTS } from "@/hooks/useTTS";
+import { agentColorVar } from "@/lib/agentColors";
+import { Search, ArrowDown, ArrowUp, X, Volume2, Loader2 } from "lucide-react";
 import type { StreamEvent } from "@/lib/schemas";
 
 const EVENT_TYPES = [
@@ -10,21 +12,72 @@ const EVENT_TYPES = [
   "quantum_randomness",
   "quantum_scheduling",
   "consensus_weights",
+  "quantum_convergence_check",
   "web_context_enriched",
   "final_answer",
   "run_committed",
 ];
 
+function AgentAvatar({ agentId, label }: { agentId: string; label: string }) {
+  const initial = label.trim().charAt(0).toUpperCase() || "?";
+  return (
+    <div
+      className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
+      style={{ backgroundColor: agentColorVar(agentId) }}
+      aria-hidden
+    >
+      {initial}
+    </div>
+  );
+}
+
+function TTSButton({
+  ttsEnabled,
+  messageId,
+  agentId,
+  text,
+}: {
+  ttsEnabled: boolean;
+  messageId: string;
+  agentId: string;
+  text: string;
+}) {
+  const { play, isPlaying, isLoading } = useTTS();
+  if (!ttsEnabled || !text) return null;
+
+  const loading = isLoading(messageId);
+  const playing = isPlaying(messageId);
+
+  return (
+    <button
+      onClick={() => play(messageId, agentId, text)}
+      className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-full hover:bg-foreground/10 transition-colors ${playing ? "text-accent-cool" : "text-muted-foreground"}`}
+      aria-label={playing ? "Stop narration" : "Play narration"}
+      title={playing ? "Stop narration" : "Play narration"}
+    >
+      {loading ? (
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+      ) : (
+        <Volume2 className="w-3.5 h-3.5" />
+      )}
+    </button>
+  );
+}
+
 function EventRow({
   event,
   compact,
+  ttsEnabled,
 }: {
   event: StreamEvent;
   compact: boolean;
+  ttsEnabled: boolean;
 }) {
   const p = event.payload as Record<string, unknown>;
   const type = event.event_type;
   const ts = event.ts_unix_ms ?? event.ts;
+  const agentId = typeof p.agent_id === "string" ? p.agent_id : null;
+  const displayName = String(p.display_name ?? p.agent_id ?? "");
 
   const renderContent = () => {
     switch (type) {
@@ -32,51 +85,65 @@ function EventRow({
         return (
           <div className="text-xs text-muted-foreground">
             <span className="pill-neutral text-[10px]">system</span>{" "}
-            <span className="font-medium text-foreground">
-              {String(p.display_name ?? p.agent_id)}
-            </span>{" "}
+            <span className="font-medium text-foreground">{displayName}</span>{" "}
             started round {String(p.round_idx)}
           </div>
         );
-      case "agent_responded":
+      case "agent_responded": {
+        const content = String(p.content ?? "");
         return (
           <div className="space-y-1">
-            <div className="text-xs font-medium text-foreground">
-              {String(p.display_name ?? p.agent_id)} — R{String(p.round_idx)}
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs font-medium text-foreground">
+                {displayName} — R{String(p.round_idx)}
+              </div>
+              <TTSButton
+                ttsEnabled={ttsEnabled}
+                messageId={event.event_id}
+                agentId={agentId ?? displayName}
+                text={content}
+              />
             </div>
             {!compact && (
               <div className="text-xs font-mono leading-relaxed text-foreground/80 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
-                {String(p.content ?? "")}
+                {content}
               </div>
             )}
           </div>
         );
+      }
       case "quantum_randomness":
         return (
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="pill-cool text-[10px]">Q-Random</span>
+            <span className="pill-cool text-[10px]">Q-Order · role diversity</span>
             <span className="text-xs text-foreground">
               policy: {String(p.selected_policy ?? "—")}
             </span>
-            {Array.isArray(p.selected_order) && (
-              <span className="text-[10px] text-muted-foreground font-mono">
-                order: [{(p.selected_order as string[]).join(", ")}]
-              </span>
-            )}
           </div>
         );
       case "quantum_scheduling":
         return (
           <div className="flex items-center gap-1.5">
-            <span className="pill-cool text-[10px]">Q-Sched</span>
+            <span className="pill-cool text-[10px]">Q-Order · answer diversity</span>
             <span className="text-xs">{String(p.selected_policy ?? "—")}</span>
           </div>
         );
       case "consensus_weights":
         return (
           <div className="flex items-center gap-1.5">
-            <span className="pill-warm text-[10px]">Weights</span>
+            <span className="pill-warm text-[10px]">Consensus weights</span>
             <span className="text-xs">{String(p.selected_policy ?? "—")}</span>
+          </div>
+        );
+      case "quantum_convergence_check":
+        return (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={p.converged ? "pill-success text-[10px]" : "pill-neutral text-[10px]"}>
+              {p.converged ? "Converged early" : "Continuing debate"}
+            </span>
+            <span className="text-[10px] text-muted-foreground font-mono">
+              similarity: {Number(p.quantum_avg_similarity ?? 0).toFixed(2)}
+            </span>
           </div>
         );
       case "web_context_enriched":
@@ -127,11 +194,12 @@ function EventRow({
       className="px-3 py-2 border-b border-foreground/5 last:border-0"
     >
       <div className="flex items-start gap-2">
-        <span className="text-[10px] font-mono text-muted-foreground/60 pt-0.5 shrink-0">
+        <span className="text-[10px] font-mono text-muted-foreground/60 pt-0.5 shrink-0 w-14">
           {typeof ts === "number"
             ? new Date(ts).toLocaleTimeString()
             : String(ts ?? "").slice(11, 19)}
         </span>
+        {agentId ? <AgentAvatar agentId={agentId} label={displayName} /> : <div className="w-6 shrink-0" />}
         <div className="flex-1 min-w-0">{renderContent()}</div>
       </div>
     </motion.div>
@@ -150,11 +218,14 @@ export function StreamPanel() {
     compactMode,
     clearEvents,
     streamState,
+    systemStatus,
   } = useAppStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [userScrolled, setUserScrolled] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const ttsEnabled = !!systemStatus?.tts_enabled;
 
   const handleSearch = useCallback(
     (val: string) => {
@@ -208,15 +279,14 @@ export function StreamPanel() {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: 0.15 }}
-      className="glass-card flex flex-col overflow-hidden"
-      style={{ height: "min(600px, 60vh)" }}
-      aria-label="Live Stream"
+      className="glass-card flex flex-col overflow-hidden h-full"
+      aria-label="Chat feed"
     >
       <div className="px-4 pt-3 pb-2 border-b border-foreground/5 space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold text-foreground">
-              Live Stream
+              Chat Feed
             </h2>
             {streamState !== "idle" && (
               <span
@@ -295,6 +365,7 @@ export function StreamPanel() {
                 key={event.event_id}
                 event={event}
                 compact={compactMode}
+                ttsEnabled={ttsEnabled}
               />
             ))}
           </AnimatePresence>

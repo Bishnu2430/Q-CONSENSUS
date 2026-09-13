@@ -26,6 +26,18 @@ export default {
         "accent-cool": "hsl(var(--accent-cool))",
         success: "hsl(var(--success))",
         error: "hsl(var(--error))",
+        agent: {
+          1: "hsl(var(--agent-1))",
+          2: "hsl(var(--agent-2))",
+          3: "hsl(var(--agent-3))",
+          4: "hsl(var(--agent-4))",
+          5: "hsl(var(--agent-5))",
+          6: "hsl(var(--agent-6))",
+          7: "hsl(var(--agent-7))",
+          8: "hsl(var(--agent-8))",
+          9: "hsl(var(--agent-9))",
+          10: "hsl(var(--agent-10))",
+        },
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",

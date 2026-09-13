@@ -54,6 +54,8 @@ function normalizeEvent(raw: unknown, idx: number): StreamEvent | null {
       ? (src.payload as Record<string, unknown>)
       : { value: src.payload ?? null };
 
+  const prevEventHash: string | null =
+    typeof src.prev_event_hash === 'string' ? src.prev_event_hash : null;
   const candidate: StreamEvent = {
     event_id:
       typeof src.event_id === 'string' && src.event_id.length > 0
@@ -64,10 +66,7 @@ function normalizeEvent(raw: unknown, idx: number): StreamEvent | null {
     payload,
     ts_unix_ms: typeof src.ts_unix_ms === 'number' ? src.ts_unix_ms : ts,
     ts: typeof src.ts === 'string' || typeof src.ts === 'number' ? src.ts : ts,
-    prev_event_hash:
-      typeof src.prev_event_hash === 'string' || src.prev_event_hash === null
-        ? src.prev_event_hash
-        : null,
+    prev_event_hash: prevEventHash,
     event_hash: typeof src.event_hash === 'string' ? src.event_hash : undefined,
   };
 
@@ -141,6 +140,19 @@ export const api = {
       }
       return res.json() as Promise<Record<string, unknown>>;
     }),
+
+  synthesizeSpeech: async (agentId: string, text: string): Promise<Blob> => {
+    const res = await fetch(`${BASE}/api/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: agentId, text }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => 'Unknown error');
+      throw new ApiError(res.status, `${res.status}: ${body}`);
+    }
+    return res.blob();
+  },
 
   streamUrl: (runId: string) => `${BASE}/api/stream/${runId}`,
 };

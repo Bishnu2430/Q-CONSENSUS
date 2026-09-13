@@ -52,6 +52,79 @@
     --glass-blur: 6px;
     --glass-shadow: 0 2px 16px rgba(21,35,52,0.06), 0 1px 4px rgba(21,35,52,0.04);
     --glass-border: rgba(21,35,52,0.16);
+
+    /* Agent palette (light) -- consistent color per agent across the graph
+       and chat feed, distinct from the brand accent colors */
+    --agent-1: 6 68% 44%;    /* brick red (accent-warm) */
+    --agent-2: 183 75% 30%;  /* teal (accent-cool) */
+    --agent-3: 262 52% 47%;  /* violet */
+    --agent-4: 38 85% 42%;   /* amber */
+    --agent-5: 320 55% 45%;  /* magenta */
+    --agent-6: 152 55% 32%;  /* forest green */
+    --agent-7: 205 70% 45%;  /* sky blue */
+    --agent-8: 15 70% 48%;   /* burnt orange */
+    --agent-9: 280 40% 50%;  /* purple */
+    --agent-10: 170 45% 35%; /* deep teal */
+  }
+
+  /* Inverted-navy dark mode: background derived from the light mode's ink
+     color rather than a generic neutral black, so the two modes read as
+     the same product. Brick-red brightens to coral and teal brightens to
+     aqua for contrast against the dark background. */
+  .dark {
+    --bg-warm: 222 34% 8%;
+    --bg-cool: 220 30% 11%;
+    --ink: 210 30% 92%;
+    --accent-warm: 9 76% 58%;
+    --accent-cool: 175 65% 50%;
+    --success: 152 55% 48%;
+    --error: 0 70% 62%;
+    --border-alpha: 210 30% 92%;
+
+    --background: 222 34% 8%;
+    --foreground: 210 30% 92%;
+    --card: 222 30% 12%;
+    --card-foreground: 210 30% 92%;
+    --popover: 222 30% 12%;
+    --popover-foreground: 210 30% 92%;
+    --primary: 210 30% 92%;
+    --primary-foreground: 222 34% 8%;
+    --secondary: 220 25% 16%;
+    --secondary-foreground: 210 30% 92%;
+    --muted: 220 20% 16%;
+    --muted-foreground: 210 15% 65%;
+    --accent: 175 65% 50%;
+    --accent-foreground: 222 34% 8%;
+    --destructive: 0 70% 62%;
+    --destructive-foreground: 222 34% 8%;
+    --border: 220 20% 22%;
+    --input: 220 20% 22%;
+    --ring: 175 65% 50%;
+
+    --sidebar-background: 222 30% 10%;
+    --sidebar-foreground: 210 20% 85%;
+    --sidebar-primary: 175 65% 50%;
+    --sidebar-primary-foreground: 222 34% 8%;
+    --sidebar-accent: 220 25% 16%;
+    --sidebar-accent-foreground: 210 30% 92%;
+    --sidebar-border: 220 20% 22%;
+    --sidebar-ring: 175 65% 50%;
+
+    --glass-bg: rgba(20, 26, 38, 0.72);
+    --glass-shadow: 0 2px 20px rgba(0,0,0,0.35), 0 1px 4px rgba(0,0,0,0.25);
+    --glass-border: rgba(210, 225, 245, 0.1);
+
+    /* Agent palette (dark) -- brightened for contrast against the dark bg */
+    --agent-1: 9 76% 62%;
+    --agent-2: 175 65% 52%;
+    --agent-3: 262 65% 70%;
+    --agent-4: 42 90% 62%;
+    --agent-5: 320 65% 68%;
+    --agent-6: 152 50% 55%;
+    --agent-7: 205 80% 65%;
+    --agent-8: 18 80% 62%;
+    --agent-9: 280 55% 70%;
+    --agent-10: 170 50% 55%;
   }
 }
 
@@ -62,11 +135,17 @@
 
   html {
     font-family: 'Space Grotesk', system-ui, sans-serif;
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
   }
 
   body {
     @apply text-foreground antialiased;
     background: linear-gradient(135deg, hsl(var(--bg-warm)), hsl(var(--bg-cool)));
+    transition: background-color 0.25s ease, color 0.25s ease;
     min-height: 100vh;
   }
 

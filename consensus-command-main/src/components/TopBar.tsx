@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { useAppStore } from "@/store/appStore";
 import { Activity, Wifi, WifiOff, AlertTriangle } from "lucide-react";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const statusColors: Record<string, string> = {
   idle: "pill-neutral",
@@ -55,6 +56,7 @@ export function TopBar() {
         {streamState !== "idle" && (
           <span className="pill-neutral text-[10px]">SSE: {streamState}</span>
         )}
+        <ThemeToggle />
       </div>
     </motion.header>
   );
