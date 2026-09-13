@@ -153,3 +153,42 @@ def test_anchor_commitment_refuses_when_no_code_at_address():
         assert False, "expected RuntimeError for missing contract code"
     except RuntimeError as exc:
         assert "No contract deployed" in str(exc)
+
+
+def test_anchor_commitment_parses_commitments_with_leading_zeros():
+    # Regression test: .lstrip("0x") strips the *characters* '0'/'x' from
+    # the left, not the literal "0x" prefix, so any commitment whose hex
+    # digest happens to start with '0' (about 1 in 16 of them) used to get
+    # corrupted into an odd-length string that bytes.fromhex() rejected
+    # with "non-hexadecimal number found in fromhex() arg". has_code=False
+    # so this raises for an unrelated, later reason (no contract deployed)
+    # -- reaching that error at all proves the hex parsing above it succeeded.
+    client = _make_client(_FakeEth(has_code=False))
+    leading_zero_commitment = "00" + "ab" * 31  # 64 hex chars, starts with "00"
+    try:
+        client.anchor_commitment(
+            run_id="run-1",
+            commitment=leading_zero_commitment,
+            contract_address=_TEST_ADDRESS,
+        )
+        assert False, "expected RuntimeError for missing contract code"
+    except ValueError:
+        raise AssertionError("commitment hex parsing was corrupted by leading zeros")
+    except RuntimeError as exc:
+        assert "No contract deployed" in str(exc)
+
+
+def test_anchor_commitment_strips_0x_prefix_but_not_leading_zero_digits():
+    client = _make_client(_FakeEth(has_code=False))
+    prefixed_commitment = "0x" + "00" + "cd" * 31
+    try:
+        client.anchor_commitment(
+            run_id="run-1",
+            commitment=prefixed_commitment,
+            contract_address=_TEST_ADDRESS,
+        )
+        assert False, "expected RuntimeError for missing contract code"
+    except ValueError:
+        raise AssertionError("0x-prefixed commitment hex parsing was corrupted")
+    except RuntimeError as exc:
+        assert "No contract deployed" in str(exc)

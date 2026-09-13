@@ -128,13 +128,30 @@ function EventRow({
             <span className="text-xs">{String(p.selected_policy ?? "—")}</span>
           </div>
         );
-      case "consensus_weights":
+      case "consensus_weights": {
+        const agentIds = Array.isArray(p.agent_ids) ? (p.agent_ids as string[]) : [];
+        const weights = Array.isArray(p.selected_weights) ? (p.selected_weights as number[]) : [];
         return (
-          <div className="flex items-center gap-1.5">
-            <span className="pill-warm text-[10px]">Consensus weights</span>
-            <span className="text-xs">{String(p.selected_policy ?? "—")}</span>
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5">
+              <span className="pill-warm text-[10px]">Consensus weights</span>
+              <span className="text-xs">{String(p.selected_policy ?? "—")}</span>
+            </div>
+            {agentIds.length > 0 && weights.length === agentIds.length && (
+              <div className="flex flex-wrap gap-1.5">
+                {agentIds.map((id, i) => (
+                  <span
+                    key={id}
+                    className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-foreground/10 text-foreground/80"
+                  >
+                    {id}: {(weights[i] * 100).toFixed(1)}%
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         );
+      }
       case "quantum_convergence_check":
         return (
           <div className="flex flex-wrap items-center gap-1.5">

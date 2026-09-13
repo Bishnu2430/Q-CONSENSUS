@@ -27,7 +27,7 @@ class QuantumPolicyConfig:
     use_quantum_convergence: bool = False
     convergence_similarity_threshold: float = 0.82
     shots_convergence: int = 256
-    kernel_qubits: int = 4
+    kernel_qubits: int = 8
 
 
 @dataclass(frozen=True)

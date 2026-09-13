@@ -21,6 +21,31 @@ def test_quantum_kernel_identical_text_is_similarity_one():
     assert sim == 1.0
 
 
+def test_quantum_kernel_discriminates_realistic_length_paragraphs():
+    # Regression test: text_to_angles used to normalize by total token
+    # count, which keeps every rotation angle small for any normal-length
+    # paragraph (RY barely moves the qubit away from |0> for a small
+    # angle) -- so two genuinely different multi-sentence answers always
+    # scored 0.9+ regardless of content, exactly like the classical
+    # baseline (0.2-0.3) said they shouldn't. These two paragraphs share
+    # almost no words and must not saturate near 1.0.
+    qexec = QuantumExecutor({"base_seed": 42})
+    answer_a = (
+        "Microservices allow a startup to scale individual components "
+        "independently and adopt different technology stacks per service, "
+        "which suits rapid, uncertain growth."
+    )
+    answer_b = (
+        "A monolith keeps deployment and debugging simple for a small "
+        "team with limited operational capacity, avoiding the network "
+        "and infrastructure overhead of distributed services."
+    )
+    sim = quantum_kernel_similarity(
+        text_a=answer_a, text_b=answer_b, executor=qexec, n_qubits=8, shots=2048
+    )
+    assert sim < 0.7
+
+
 def test_quantum_kernel_shared_words_more_similar_than_disjoint():
     qexec = QuantumExecutor({"base_seed": 7})
     close = quantum_kernel_similarity(

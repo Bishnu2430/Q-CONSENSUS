@@ -41,6 +41,16 @@ def text_to_angles(text: str, n_qubits: int) -> List[float]:
     Deterministic: the same text always maps to the same angles, so the
     resulting quantum state -- and therefore any kernel computed from it --
     is reproducible across runs and replay.
+
+    Normalized by the *largest* bucket, not the total token count. Dividing
+    by total token count keeps every angle small for any normal-length
+    paragraph (a bucket rarely holds more than ~15% of all tokens), and
+    RY(theta) barely moves the qubit away from |0> for small theta -- so
+    the fidelity test below stayed pinned near 1.0 for any two texts of
+    similar length, regardless of actual content (verified empirically:
+    real, clearly-different agent answers were scoring 0.92-1.0). Scaling
+    so the dominant bucket reaches pi gives the rotations enough dynamic
+    range to actually diverge between different texts.
     """
     if n_qubits < 1:
         raise ValueError("n_qubits must be >= 1")
@@ -54,10 +64,10 @@ def text_to_angles(text: str, n_qubits: int) -> List[float]:
         idx = int(hashlib.sha256(tok.encode("utf-8")).hexdigest(), 16) % n_qubits
         buckets[idx] += 1.0
 
-    total = float(buckets.sum())
-    if total <= 0:
+    peak = float(buckets.max())
+    if peak <= 0:
         return [0.0] * n_qubits
-    return [float(x / total * np.pi) for x in buckets]
+    return [float(x / peak * np.pi) for x in buckets]
 
 
 def _feature_map_circuit(angles: List[float]) -> QuantumCircuit:

@@ -58,19 +58,20 @@ export default function MissionControl() {
 
       {/* Fixed 40/60 layout: left column (New Debate, Final Reasoning, Block
           Chain) and right column (Agent Relationships, Chat Feed) both fill
-          the same fixed height. Nothing here scrolls except the Chat Feed
-          (and, if its own content runs long, the Block Chain box) -- New
-          Debate, Final Reasoning, and Agent Relationships are always sized
-          to fit. */}
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-4">
-        <div className="flex flex-col gap-3 min-h-0">
+          the same fixed height. The page itself never scrolls. Chat Feed is
+          the main scrolling surface on the right; the left column also
+          scrolls internally (rather than being clipped with no way back)
+          if New Debate's expanded "run in progress" state and Final
+          Reasoning's content together push Block Chain out of view. */}
+      <div className="flex-1 min-h-0 grid grid-cols-[2fr_3fr] gap-4">
+        <div className="flex flex-col gap-3 min-h-0 overflow-y-auto pr-1">
           <div className="shrink-0">
             <ControlPanel />
           </div>
           <div className="shrink-0">
             <FinalReasoning />
           </div>
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-[340px]">
             <BlockChainBox />
           </div>
         </div>
