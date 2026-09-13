@@ -53,9 +53,14 @@ class ChainVerifier:
         if on_chain_commitment is None:
             return {"verified": False, "reason": "Commitment not found on-chain", "expected": commitment}
 
-        # Normalize for comparison
-        expected = commitment.lower().lstrip("0x")
-        actual = on_chain_commitment.lower().lstrip("0x")
+        # Normalize for comparison. Strip a literal "0x" prefix, not the
+        # character set {'0','x'} -- .lstrip("0x") corrupts any commitment
+        # whose hex digits happen to start with '0' (see contract_anchor.py).
+        def _strip_0x(value: str) -> str:
+            return value[2:] if value.startswith("0x") else value
+
+        expected = _strip_0x(commitment.lower())
+        actual = _strip_0x(on_chain_commitment.lower())
 
         if expected == actual or expected == actual[-64:]:
             return {"verified": True, "on_chain_commitment": on_chain_commitment, "event_commitment": commitment}

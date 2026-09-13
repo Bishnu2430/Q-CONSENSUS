@@ -112,7 +112,13 @@ class ContractAnchoringClient:
         """
         run_id_bytes = Web3.keccak(text=run_id)
 
-        raw_commitment = bytes.fromhex(commitment.lstrip("0x"))
+        # .lstrip("0x") strips any combination of the *characters* '0' and
+        # 'x' from the left, not the literal "0x" prefix -- it corrupts any
+        # commitment hash with leading zero digits (common: ~1 in 16 hex
+        # digests starts with "0"), leaving an odd-length remainder that
+        # bytes.fromhex() rejects. Strip the literal prefix instead.
+        commitment_hex = commitment[2:] if commitment.startswith(("0x", "0X")) else commitment
+        raw_commitment = bytes.fromhex(commitment_hex)
         if len(raw_commitment) != 32:
             raise ValueError("commitment must be exactly 32 bytes (sha256 hex)")
 
