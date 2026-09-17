@@ -7,12 +7,12 @@ from typing import Any
 
 import pytest
 
-from qconsensus.debate import DebateOrchestrator
-from qconsensus.events import JsonlEventStore
-from qconsensus.llm_client import LlamaCppClient
-from qconsensus.quantum_executor import QuantumExecutor
-from qconsensus.types import DebateConfig, AgentSpec, QuantumPolicyConfig
-from qconsensus.web_context import fetch_web_context, fetch_web_context_serpapi, fetch_web_context_duckduckgo
+from src.qconsensus.debate import DebateOrchestrator
+from src.qconsensus.events import JsonlEventStore
+from src.qconsensus.llm_client import LlamaCppClient
+from src.qconsensus.quantum_executor import QuantumExecutor
+from src.qconsensus.types import DebateConfig, AgentSpec, QuantumPolicyConfig
+from src.qconsensus.web_context import fetch_web_context, fetch_web_context_serpapi, fetch_web_context_duckduckgo
 
 
 # ============================================================================
@@ -224,7 +224,7 @@ class TestProgressEndpoint:
         """Progress endpoint should return proper schema."""
         # This would require a running FastAPI instance
         # For now, we test the schema parsing via Zod
-        from qconsensus.web import app as web_app
+        from src.qconsensus.web import app as web_app
         
         # Verify the progress endpoint exists
         routes = [route.path for route in web_app.routes]

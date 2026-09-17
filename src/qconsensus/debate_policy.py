@@ -4,6 +4,14 @@ from typing import Dict, List
 
 from .types import AgentSpec
 
+# Initial and revised answers are the candidates for the run's final answer,
+# so they must open with a complete, direct answer to the user's query rather
+# than only meta-commentary about the debate.
+ANSWER_FIRST_INSTRUCTION = (
+    "1. Answer: answer the user's query directly and completely, from your role's perspective. "
+    "If the query asks for specific parts (e.g. pros, risks, a recommendation), cover every part.\n"
+)
+
 
 def build_agent_prompts(*, user_query: str, agents: List[AgentSpec]) -> Dict[str, List[dict]]:
     """Build per-agent prompt messages.
@@ -21,11 +29,12 @@ def build_agent_prompts(*, user_query: str, agents: List[AgentSpec]) -> Dict[str
                 "role": "user",
                 "content": (
                     "You are participating in a multi-agent debate.\n\n"
-                    "Rules:\n"
-                    "- Provide your best answer.\n"
-                    "- Provide a concise rationale summary (bullet points).\n"
-                    "- Provide a self-checklist of possible errors/unknowns.\n"
-                    "- Do NOT reveal hidden chain-of-thought; only provide the summary rationale.\n\n"
+                    "Respond in this order:\n"
+                    f"{ANSWER_FIRST_INSTRUCTION}"
+                    "2. Rationale: 2-4 short bullet points.\n"
+                    "3. Self-check: 1-3 short bullet points on possible errors or unknowns.\n\n"
+                    "Keep the whole response under 200 words.\n"
+                    "Do NOT reveal hidden chain-of-thought; only provide the summary rationale.\n\n"
                     f"User query:\n{user_query}"
                 ),
             },
@@ -54,7 +63,7 @@ def build_cross_critique_prompt(
                 "Cross-critique round.\n\n"
                 "Task:\n"
                 "- Critique peers for logic gaps, missing checks, and unsupported claims.\n"
-                "- Keep critique concise and actionable.\n"
+                "- Keep critique concise and actionable (under 150 words in total).\n"
                 "- End with a bullet list of highest-risk failure modes.\n"
                 "- Do NOT reveal hidden chain-of-thought; only provide rationale summary.\n\n"
                 f"User query:\n{user_query}\n\n"
@@ -82,12 +91,13 @@ def build_self_revision_prompt(
         {
             "role": "user",
             "content": (
-                "Self-revision round.\n\n"
-                "Task:\n"
-                "- Revise your answer using peer critiques.\n"
-                "- Include a short change-log of what you corrected.\n"
-                "- Include final confidence (low/medium/high) with one-line reason.\n"
-                "- Do NOT reveal hidden chain-of-thought; only provide rationale summary.\n\n"
+                "Self-revision round. Revise your answer using the peer critiques.\n\n"
+                "Respond in this order:\n"
+                f"{ANSWER_FIRST_INSTRUCTION}"
+                "2. Changes: 1-3 short bullet points on what you corrected.\n"
+                "3. Confidence: low/medium/high with a one-line reason.\n\n"
+                "Keep the whole response under 200 words.\n"
+                "Do NOT reveal hidden chain-of-thought; only provide rationale summary.\n\n"
                 f"User query:\n{user_query}\n\n"
                 f"Your prior answer:\n{own_answer}\n\n"
                 f"Peer critiques:\n\n{critiques_text}"
