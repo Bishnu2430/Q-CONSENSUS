@@ -5,7 +5,7 @@
       "name": "frontend-dev",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "consensus-command-main", "run", "dev"],
-      "port": 8080
+      "port": 5173
     }
   ]
 }
