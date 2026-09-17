@@ -1,0 +1,11 @@
+# node_modules and dist are produced inside the image (npm ci / npm run build);
+# copying the host's copies would mix glibc-built native binaries into the
+# Alpine build stage. The model is mounted into the llama container at runtime.
+.git
+.venv
+models
+data
+**/__pycache__
+.pytest_cache
+consensus-command-main/node_modules
+consensus-command-main/dist

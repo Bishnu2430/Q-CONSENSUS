@@ -32,6 +32,8 @@ from .types import AgentSpec, DebateConfig, QuantumPolicyConfig
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+# Qiskit's transpiler logs every circuit pass at INFO, drowning the app's own logs.
+logging.getLogger("qiskit").setLevel(logging.WARNING)
 
 
 class RunRequest(BaseModel):

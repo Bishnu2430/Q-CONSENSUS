@@ -19,6 +19,9 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
+      # Optional Piper voice model (scripts/download_tts_voice.py); without this
+      # mount TTS_ENABLED=true can never find the model inside the container.
+      - ./models/tts:/app/models/tts:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/status"]
       interval: 10s
