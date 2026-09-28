@@ -1,12 +1,12 @@
-"""Download the Piper voice model used for local TTS.
+"""Download the Piper voice model used for local TTS in dev mode.
 
 One-time setup step: fetches a single multi-speaker voice model (~75MB) into
-models/tts/. Not committed to git (like the LLM model, this is a runtime
-asset, but TTS is optional so it isn't force-bundled via LFS). Run this once,
-then set TTS_ENABLED=true in .env.
+models/tts/ for the locally running API. Not committed to git. The Docker
+stack doesn't need this: its "models" service downloads the voice into the
+models volume when TTS_ENABLED=true.
 
 Usage:
-    python scripts/download_tts_voice.py [voice_name] [--download-dir DIR]
+    .venv\\Scripts\\python scripts/download_tts_voice.py [voice_name] [--download-dir DIR]
 """
 
 import argparse

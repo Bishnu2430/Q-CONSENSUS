@@ -1,27 +1,30 @@
+# Start with scripts\start.cmd: it checks prerequisites, downloads the model,
+# deploys the anchor contract and waits for every service to be healthy.
+# Plain "docker compose up" also works once .env exists.
+name: qconsensus
+
 services:
   orchestrator:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        APP_UID: ${APP_UID:-1000}
-        APP_GID: ${APP_GID:-1000}
     container_name: qconsensus-orchestrator
     env_file:
-      - .env
+      - path: .env
+        required: false
     depends_on:
       llama:
         condition: service_healthy
       blockchain:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
-      # Optional Piper voice model (scripts/download_tts_voice.py); without this
-      # mount TTS_ENABLED=true can never find the model inside the container.
-      - ./models/tts:/app/models/tts:ro
+      # Only the optional Piper voice (models/tts/) is read from here; the
+      # models service downloads it when TTS_ENABLED=true.
+      - models:/app/models:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/status"]
       interval: 10s
@@ -29,12 +32,30 @@ services:
       retries: 10
       start_period: 15s
 
+  # One-shot: downloads the GGUF model (and Piper voice) into the models
+  # volume, then exits. A no-op when the files are already there.
+  models:
+    build:
+      context: ./docker/models
+    environment:
+      LLAMA_MODEL_FILE: ${LLAMA_MODEL_FILE:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}
+      LLAMA_MODEL_URL: ${LLAMA_MODEL_URL:-https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf}
+      # No colon: an explicitly empty LLAMA_MODEL_SHA256 skips verification.
+      LLAMA_MODEL_SHA256: ${LLAMA_MODEL_SHA256-626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d}
+      TTS_ENABLED: ${TTS_ENABLED:-false}
+      TTS_VOICE_MODEL_PATH: ${TTS_VOICE_MODEL_PATH:-models/tts/en_US-libritts_r-medium.onnx}
+    volumes:
+      - models:/models
+
   llama:
     image: ghcr.io/ggml-org/llama.cpp:server
     container_name: qconsensus-llama
+    depends_on:
+      models:
+        condition: service_completed_successfully
     command:
       - "-m"
-      - "/models/${LLAMA_MODEL_FILE}"
+      - "/models/${LLAMA_MODEL_FILE:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
       - "--host"
       - "0.0.0.0"
       - "--port"
@@ -46,9 +67,9 @@ services:
       - "--threads"
       - "4"
     ports:
-      - "8080:8080"
+      - "${LLM_PORT:-8080}:8080"
     volumes:
-      - ./models:/models:ro
+      - models:/models:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 5s
@@ -62,10 +83,9 @@ services:
       dockerfile: geth.Dockerfile
     container_name: qconsensus-blockchain
     ports:
-      - "8545:8545"
+      - "${RPC_PORT:-8545}:8545"
     volumes:
       - gethdata:/data
-      - ./blockchain/init-geth.sh:/usr/local/bin/init-geth.sh
     healthcheck:
       test:
         - "CMD-SHELL"
@@ -79,4 +99,5 @@ services:
       start_period: 10s
 
 volumes:
+  models:
   gethdata:
