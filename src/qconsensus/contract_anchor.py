@@ -20,6 +20,23 @@ except Exception:  # pragma: no cover - compatibility fallback
     from web3.middleware import geth_poa_middleware as _poa_middleware
 
 
+def configured_contract_address() -> Optional[str]:
+    """The anchor contract address: ANCHOR_CONTRACT_ADDRESS if set, otherwise
+    the address the "contract" compose service wrote to the file named by
+    ANCHOR_CONTRACT_ADDRESS_FILE."""
+    address = (os.getenv("ANCHOR_CONTRACT_ADDRESS") or "").strip()
+    if address:
+        return address
+    path = os.getenv("ANCHOR_CONTRACT_ADDRESS_FILE")
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
 @dataclass(frozen=True)
 class AnchorContractConfig:
     rpc_url: str
@@ -77,7 +94,7 @@ class ContractAnchoringClient:
         chain_id = int(os.getenv("ETH_CHAIN_ID", "1337"))
         from_address = os.getenv("ETH_FROM_ADDRESS")
         private_key = os.getenv("ETH_PRIVATE_KEY")
-        contract_address = os.getenv("ANCHOR_CONTRACT_ADDRESS")
+        contract_address = configured_contract_address()
 
         if not from_address or not private_key:
             raise RuntimeError("ETH_FROM_ADDRESS and ETH_PRIVATE_KEY must be set when CONTRACT_ANCHOR_ENABLED=true")
@@ -96,8 +113,8 @@ class ContractAnchoringClient:
     def has_code(self, address: str) -> bool:
         """Return True if the given address currently has deployed contract code.
 
-        Used to detect a stale ANCHOR_CONTRACT_ADDRESS left over in .env after the
-        chain's data volume was wiped/recreated but the address was never cleared.
+        Used to detect a stale contract address left over after the chain's data
+        volume was wiped/recreated.
         """
         checksum_address = Web3.to_checksum_address(address)
         code = self.w3.eth.get_code(checksum_address)
@@ -125,8 +142,8 @@ class ContractAnchoringClient:
         checksum_address = Web3.to_checksum_address(contract_address)
         if not self.has_code(checksum_address):
             raise RuntimeError(
-                f"No contract deployed at {checksum_address} — redeploy via "
-                "scripts/deploy_contract.py and update ANCHOR_CONTRACT_ADDRESS"
+                f"No contract deployed at {checksum_address} — restart the stack "
+                "so the contract service redeploys it"
             )
 
         contract = self.w3.eth.contract(address=checksum_address, abi=self.contract_abi)

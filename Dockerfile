@@ -24,14 +24,15 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# Run as a non-root user. Only /app/data (bind-mounted from ./data) needs to
-# be writable; the code stays root-owned and read-only.
+# Run as a non-root user. Only /app/data (bind-mounted from ./data) and
+# /anchor (the contract service's volume, which takes its ownership from this
+# directory) need to be writable; the code stays root-owned and read-only.
 ARG APP_UID=1000
 ARG APP_GID=1000
 RUN groupadd -g "${APP_GID}" appuser \
     && useradd -m -u "${APP_UID}" -g appuser appuser \
-    && mkdir -p /app/data \
-    && chown appuser:appuser /app/data
+    && mkdir -p /app/data /anchor \
+    && chown appuser:appuser /app/data /anchor
 USER appuser
 
 # Pre-fetch the Solidity compiler used by scripts/deploy_contract.py, so the

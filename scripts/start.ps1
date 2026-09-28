@@ -16,16 +16,13 @@ $ProgressPreference = 'SilentlyContinue'
 $RootDir = Split-Path -Parent $PSScriptRoot
 $FrontendDir = Join-Path $RootDir 'consensus-command-main'
 $EnvFile = Join-Path $RootDir '.env'
-$EnvExample = Join-Path $RootDir '.env.example'
 $ModelsVolume = 'qconsensus_models'
-$DefaultModelFile = 'Qwen2.5-3B-Instruct-Q4_K_M.gguf'
 $MinDockerRamGB = 6
 $MinDiskGB = 8
-# Well-known account of the local geth dev chain (see blockchain/init-geth.sh).
-# It only ever holds test ether on this private chain.
-$DevChainAddress = '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266'
-$DevChainPrivateKey = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
-$Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+# .env keys that docker-compose.yml now sets itself (so a value in .env is
+# ignored), and keys that nothing reads at all.
+$ComposeWiredKeys = @('LLM_BASE_URL', 'ETH_RPC_URL', 'ETH_CHAIN_ID', 'ETH_FROM_ADDRESS', 'ETH_PRIVATE_KEY', 'ANCHOR_CONTRACT_ADDRESS')
+$UnusedKeys = @('POSTGRES_URL', 'ETH_ANCHOR_ENABLED', 'ANCHOR_CONTRACT_OWNER', 'ARTIFACT_STORE_DIR', 'APP_UID', 'APP_GID')
 $UseColor = -not $env:NO_COLOR
 
 $script:Failures = 0
@@ -37,6 +34,9 @@ $script:OpenBrowser = $true
 $script:CheckDev = $false
 $script:DevPython = ''
 $script:ContractChanged = $false
+$script:ContractAddress = ''
+$script:StackConfig = $null
+$script:StackConfigError = ''
 $script:RunningServices = @()
 $script:ExcludedRanges = $null
 $script:DevProcs = @()
@@ -91,75 +91,80 @@ Options:
 }
 
 
-# ------------------------------------------------------------------- .env ---
+# --------------------------------------------------------------- settings ---
+# docker-compose.yml (with the optional .env merged in) is the single source
+# of truth: settings are read from "docker compose config", and this script
+# never writes .env.
 
-function Get-DotEnv([string]$Key) {
-  # Last assignment wins; strips surrounding quotes and inline "# comments".
-  # Before .env exists, report the defaults from .env.example.
-  $path = $EnvFile
-  if (-not (Test-Path -LiteralPath $path)) { $path = $EnvExample }
-  if (-not (Test-Path -LiteralPath $path)) { return '' }
-  $found = ''
-  $pattern = '^\s*' + [regex]::Escape($Key) + '=(.*)$'
-  foreach ($line in [IO.File]::ReadAllLines($path)) {
-    if ($line -match $pattern) {
-      $value = ($Matches[1] -replace '\s+#.*$', '').Trim()
-      if ($value.Length -ge 2 -and (($value[0] -eq '"' -and $value[-1] -eq '"') -or ($value[0] -eq "'" -and $value[-1] -eq "'"))) {
-        $value = $value.Substring(1, $value.Length - 2)
-      }
-      $found = $value
+function Get-StackConfig {
+  if ($null -eq $script:StackConfig) {
+    $result = Invoke-Captured docker @('compose', 'config', '--format', 'json')
+    if ($result.Code -ne 0) {
+      $script:StackConfigError = $result.Output
+      return $null
     }
+    $script:StackConfig = $result.Output | ConvertFrom-Json
   }
-  return $found
+  return $script:StackConfig
 }
 
-function Set-DotEnv([string]$Key, [string]$Value) {
-  # Written as UTF-8 without a BOM and with LF endings: Docker Compose would
-  # read a BOM as part of the first key.
-  $pattern = '^\s*' + [regex]::Escape($Key) + '='
-  $out = New-Object System.Collections.Generic.List[string]
-  $done = $false
-  foreach ($line in [IO.File]::ReadAllLines($EnvFile)) {
-    if ($line -match $pattern) {
-      if (-not $done) { $out.Add("$Key=$Value"); $done = $true }
-      continue
+function Get-ServiceEnv([string]$Service) {
+  # The environment Compose gives a service: its .env entries overlaid with
+  # the values docker-compose.yml sets.
+  $map = @{}
+  $config = Get-StackConfig
+  if ($config) {
+    $environment = $config.services.$Service.environment
+    if ($environment) {
+      foreach ($property in $environment.PSObject.Properties) { $map[$property.Name] = [string]$property.Value }
     }
-    $out.Add($line)
   }
-  if (-not $done) { $out.Add("$Key=$Value") }
-  [IO.File]::WriteAllText($EnvFile, (($out -join "`n") + "`n"), $Utf8NoBom)
+  return $map
 }
 
-function Get-DotEnvKeys([string]$Path) {
+function Get-Setting([string]$Service, [string]$Key, [string]$Default = '') {
+  $value = (Get-ServiceEnv $Service)[$Key]
+  if ($value) { return $value }
+  return $Default
+}
+
+function Get-DotEnvKeys {
   $keys = @()
-  foreach ($line in [IO.File]::ReadAllLines($Path)) {
-    if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)=') { $keys += $Matches[1] }
+  if (Test-Path -LiteralPath $EnvFile) {
+    foreach ($line in [IO.File]::ReadAllLines($EnvFile)) {
+      if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+        $keys += [pscustomobject]@{ Key = $Matches[1]; Value = $Matches[2].Trim() }
+      }
+    }
   }
   return $keys
-}
-
-function Import-DotEnv {
-  # Exports every .env key into this process (and so into child processes).
-  foreach ($key in (Get-DotEnvKeys $EnvFile | Select-Object -Unique)) {
-    [Environment]::SetEnvironmentVariable($key, (Get-DotEnv $key), 'Process')
-  }
 }
 
 function Test-True([string]$Value) {
   return @('1', 'true', 'yes', 'on') -contains "$Value".Trim().ToLowerInvariant()
 }
 
-function Get-PortSetting([string]$Key, [int]$Default) {
+function Get-PublishedPort([string]$Service, [int]$Default) {
+  $config = Get-StackConfig
   $number = 0
-  if ([int]::TryParse((Get-DotEnv $Key), [ref]$number) -and $number -gt 0 -and $number -lt 65536) { return $number }
+  if ($config -and $config.services.$Service.ports -and
+      [int]::TryParse([string]@($config.services.$Service.ports)[0].published, [ref]$number)) {
+    return $number
+  }
   return $Default
 }
 
 function Update-Ports {
-  $script:ApiPort = Get-PortSetting 'API_PORT' 8000
-  $script:LlmPort = Get-PortSetting 'LLM_PORT' 8080
-  $script:RpcPort = Get-PortSetting 'RPC_PORT' 8545
-  $script:VitePort = Get-PortSetting 'VITE_PORT' 5173
+  $script:ApiPort = Get-PublishedPort 'orchestrator' 8000
+  $script:LlmPort = Get-PublishedPort 'llama' 8080
+  $script:RpcPort = Get-PublishedPort 'blockchain' 8545
+  # Vite runs outside Docker, so its port comes straight from .env.
+  $script:VitePort = 5173
+  $number = 0
+  $vite = @(Get-DotEnvKeys | Where-Object { $_.Key -eq 'VITE_PORT' }) | Select-Object -Last 1
+  if ($vite -and [int]::TryParse($vite.Value, [ref]$number) -and $number -gt 0 -and $number -lt 65536) {
+    $script:VitePort = $number
+  }
 }
 
 
@@ -381,40 +386,30 @@ function Test-Docker {
   }
 }
 
-function Test-EnvFile {
+function Test-Settings {
+  if (-not (Get-StackConfig)) {
+    Write-Fail 'docker compose cannot read the configuration'
+    Write-Hint $script:StackConfigError
+    return
+  }
   if (-not (Test-Path -LiteralPath $EnvFile)) {
-    if (-not $script:AutoFix) {
-      Write-Warn '.env does not exist yet (start will create it from .env.example)'
-      return
-    }
-    Copy-Item -LiteralPath $EnvExample -Destination $EnvFile
-    Write-Ok '.env created from .env.example'
-  } else {
-    Write-Ok '.env present'
+    Write-Ok 'no .env; using the defaults (copy .env.example to .env to change settings)'
+    return
   }
-
-  $bytes = [IO.File]::ReadAllBytes($EnvFile)
-  if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
-    if ($script:AutoFix) {
-      $trimmed = New-Object byte[] ($bytes.Length - 3)
-      [Array]::Copy($bytes, 3, $trimmed, 0, $trimmed.Length)
-      [IO.File]::WriteAllBytes($EnvFile, $trimmed)
-      Write-Ok 'removed the UTF-8 BOM from .env (Docker Compose would misread the first key)'
-    } else {
-      Write-Warn '.env starts with a UTF-8 BOM, which Docker Compose misreads (start will remove it)'
-    }
+  Write-Ok '.env present (optional settings)'
+  $keys = @(Get-DotEnvKeys | ForEach-Object { $_.Key })
+  $wired = @($keys | Where-Object { $ComposeWiredKeys -contains $_ } | Select-Object -Unique)
+  $unused = @($keys | Where-Object { $UnusedKeys -contains $_ } | Select-Object -Unique)
+  if ($wired.Count -gt 0) {
+    Write-Info ".env sets $($wired -join ', '); docker-compose.yml sets these itself, so they're ignored (safe to delete)"
   }
-
-  $present = Get-DotEnvKeys $EnvFile
-  $missing = @(Get-DotEnvKeys $EnvExample | Where-Object { $present -notcontains $_ })
-  if ($missing.Count -gt 0) {
-    Write-Warn ".env is missing keys from .env.example (defaults apply): $($missing -join ' ')"
+  if ($unused.Count -gt 0) {
+    Write-Info ".env sets $($unused -join ', '), which nothing uses (safe to delete)"
   }
 }
 
 function Test-Model {
-  $file = Get-DotEnv 'LLAMA_MODEL_FILE'
-  if (-not $file) { $file = $DefaultModelFile }
+  $file = Get-Setting 'models' 'LLAMA_MODEL_FILE'
   if ((Invoke-Captured docker @('volume', 'inspect', $ModelsVolume)).Code -eq 0) {
     Write-Ok "model volume $ModelsVolume exists ($file is checked on start)"
   } else {
@@ -423,9 +418,7 @@ function Test-Model {
 }
 
 function Test-DataDir {
-  foreach ($dir in 'data\events', 'data\artifacts') {
-    New-Item -ItemType Directory -Force -Path (Join-Path $RootDir $dir) | Out-Null
-  }
+  New-Item -ItemType Directory -Force -Path (Join-Path $RootDir 'data\events') | Out-Null
   $probe = Join-Path $RootDir "data\events\.write-test-$PID"
   try {
     [IO.File]::WriteAllText($probe, 'ok')
@@ -438,31 +431,20 @@ function Test-DataDir {
 }
 
 function Test-Anchoring {
-  if (-not (Test-True (Get-DotEnv 'CONTRACT_ANCHOR_ENABLED'))) {
-    Write-Info 'blockchain anchoring disabled (CONTRACT_ANCHOR_ENABLED=false)'
-    return
-  }
-  if (-not (Get-DotEnv 'ETH_FROM_ADDRESS') -or -not (Get-DotEnv 'ETH_PRIVATE_KEY')) {
-    if ($script:AutoFix) {
-      Set-DotEnv 'ETH_FROM_ADDRESS' $DevChainAddress
-      Set-DotEnv 'ETH_PRIVATE_KEY' $DevChainPrivateKey
-      Write-Ok 'anchoring account set to the local dev-chain account in .env'
-    } else {
-      Write-Warn 'ETH_FROM_ADDRESS/ETH_PRIVATE_KEY are empty (start will fill in the local dev-chain account)'
-    }
+  if (Test-True (Get-Setting 'orchestrator' 'CONTRACT_ANCHOR_ENABLED')) {
+    Write-Ok 'blockchain anchoring enabled (the contract service deploys the contract)'
   } else {
-    Write-Ok 'anchoring account configured'
+    Write-Info 'blockchain anchoring disabled (CONTRACT_ANCHOR_ENABLED=false)'
   }
 }
 
 function Test-Tts([string]$Mode) {
-  if (-not (Test-True (Get-DotEnv 'TTS_ENABLED'))) { return }
+  if (-not (Test-True (Get-Setting 'orchestrator' 'TTS_ENABLED'))) { return }
   if ($Mode -eq 'up') {
     Write-Ok 'TTS enabled (the voice is downloaded into the models volume on start)'
     return
   }
-  $voice = Get-DotEnv 'TTS_VOICE_MODEL_PATH'
-  if (-not $voice) { $voice = 'models/tts/en_US-libritts_r-medium.onnx' }
+  $voice = Get-Setting 'orchestrator' 'TTS_VOICE_MODEL_PATH' 'models/tts/en_US-libritts_r-medium.onnx'
   $voicePath = $voice
   if (-not [IO.Path]::IsPathRooted($voice)) { $voicePath = Join-Path $RootDir $voice }
   if (Test-Path -LiteralPath $voicePath) {
@@ -517,7 +499,7 @@ function Test-DockerResources {
 function Test-DevPython {
   $venv = Join-Path $RootDir '.venv'
   $py = Join-Path $venv 'Scripts\python.exe'
-  $imports = 'import fastapi, uvicorn, requests, httpx, psutil, web3, pydantic, qiskit, qiskit_aer, numpy, scipy, yaml, solcx'
+  $imports = 'import fastapi, uvicorn, requests, httpx, psutil, web3, pydantic, qiskit, qiskit_aer, numpy, scipy, yaml'
   $venvHint = 'uv venv --clear --python 3.11 .venv; uv pip install --python .venv\Scripts\python.exe -r requirements.txt'
 
   if ((Test-Path -LiteralPath $py) -and (Invoke-Captured $py @('-c', $imports)).Code -eq 0) {
@@ -613,7 +595,8 @@ function Invoke-Checks([string]$Mode) {
   if ($script:Failures -gt 0) { return }
 
   Write-Step 'Checking configuration'
-  Test-EnvFile
+  Test-Settings
+  if ($script:Failures -gt 0) { return }
   Update-Ports
   Test-Model
   Test-DataDir
@@ -681,8 +664,7 @@ function Invoke-ComposeBuild([string[]]$Services = @()) {
 
 function Invoke-ModelFetch {
   Write-Step 'Preparing models'
-  $file = Get-DotEnv 'LLAMA_MODEL_FILE'
-  if (-not $file) { $file = $DefaultModelFile }
+  $file = Get-Setting 'models' 'LLAMA_MODEL_FILE'
   Write-Info "$file lives in Docker volume $ModelsVolume (downloaded once, resumable)"
   $tty = @()
   if ([Console]::IsOutputRedirected) { $tty = @('-T') }
@@ -706,50 +688,40 @@ function Start-Infra {
   Write-Ok "blockchain RPC    http://localhost:$RpcPort"
 }
 
-function Invoke-EnsureContract([string]$Mode) {
-  # Sets ContractChanged when a new contract address was written to .env.
+function Invoke-ContractService {
+  # Runs the one-shot contract service, which keeps the deployed anchor
+  # contract (redeploying after a chain reset) and saves its address in the
+  # anchor volume. Sets ContractAddress, and ContractChanged when it deployed.
   $script:ContractChanged = $false
-  if (-not (Test-True (Get-DotEnv 'CONTRACT_ANCHOR_ENABLED'))) { return }
+  $script:ContractAddress = ''
+  if (-not (Test-True (Get-Setting 'orchestrator' 'CONTRACT_ANCHOR_ENABLED'))) { return }
 
   Write-Step 'Checking anchor contract'
-  $address = Get-DotEnv 'ANCHOR_CONTRACT_ADDRESS'
-  if ($address) {
-    $code = ''
-    try { $code = "$((Invoke-Rpc 'eth_getCode' @($address, 'latest')).result)" } catch { }
-    if ($code -and $code -ne '0x') {
-      Write-Ok "contract deployed at $address"
-      return
-    }
-    Write-Warn "no contract code at $address (new or reset chain); redeploying"
-  }
-
-  Write-Info 'deploying RunCommitmentAnchor ...'
-  if ($Mode -eq 'up') {
-    # Runs inside the orchestrator image (web3 + a pre-fetched solc), so the
-    # host needs no Python.
-    $result = Invoke-Captured docker @('compose', 'run', '--rm', '--no-deps', '-T',
-      '-e', 'ETH_RPC_URL=http://blockchain:8545', 'orchestrator', 'python', 'scripts/deploy_contract.py')
-  } else {
-    $key = Get-DotEnv 'ETH_PRIVATE_KEY'
-    if (-not $key) { $key = $DevChainPrivateKey }
-    $env:ETH_RPC_URL = "http://127.0.0.1:$RpcPort"
-    $env:ETH_PRIVATE_KEY = $key
-    Write-Info 'first run downloads solc 0.8.17'
-    $result = Invoke-Captured $script:DevPython @((Join-Path $RootDir 'scripts\deploy_contract.py'))
-  }
+  $result = Invoke-Captured docker @('compose', 'run', '--rm', '-T', 'contract')
+  # Drop compose's own "Container ... Running" progress lines.
+  $lines = @($result.Output -split "`n" | Where-Object { $_.Trim() -and $_ -notmatch '^\s*(Container|Network|Volume) \S+ \w+\s*$' })
   if ($result.Code -ne 0) {
-    Write-Host $result.Output
-    Stop-WithError 'anchor contract deployment failed'
+    $lines | ForEach-Object { Write-Host "      $_" }
+    Stop-WithError 'the contract service failed (see output above)'
   }
-  $found = [regex]::Matches($result.Output, 'ANCHOR_CONTRACT_ADDRESS=(0x[0-9a-fA-F]{40})')
-  if ($found.Count -eq 0) {
-    Write-Host $result.Output
-    Stop-WithError 'could not parse the deployed contract address'
+  $address = ''
+  $status = ''
+  foreach ($line in $lines) {
+    if ($line -match '^ANCHOR_CONTRACT_ADDRESS=(0x[0-9a-fA-F]{40})') { $address = $Matches[1] }
+    elseif ($line -match '^CONTRACT_STATUS=(\w+)') { $status = $Matches[1] }
+    elseif ($line -match 'no contract code') { Write-Warn $line.Trim() }
   }
-  $newAddress = $found[$found.Count - 1].Groups[1].Value
-  Set-DotEnv 'ANCHOR_CONTRACT_ADDRESS' $newAddress
-  $script:ContractChanged = $true
-  Write-Ok "contract deployed at $newAddress (saved to .env)"
+  if (-not $address) {
+    $lines | ForEach-Object { Write-Host "      $_" }
+    Stop-WithError 'the contract service did not report a contract address'
+  }
+  $script:ContractAddress = $address
+  if ($status -eq 'deployed') {
+    $script:ContractChanged = $true
+    Write-Ok "contract deployed at $address"
+  } else {
+    Write-Ok "contract already deployed at $address"
+  }
 }
 
 function Show-StatusSummary([string]$Base, [string]$LogsHint) {
@@ -757,7 +729,7 @@ function Show-StatusSummary([string]$Base, [string]$LogsHint) {
   Write-Info "agents loaded: $($status.agents_loaded)"
   if ($status.contract_anchor_enabled -eq $true -and $status.contract_deployed -eq $true) {
     Write-Ok 'blockchain anchoring active'
-  } elseif (Test-True (Get-DotEnv 'CONTRACT_ANCHOR_ENABLED')) {
+  } elseif (Test-True (Get-Setting 'orchestrator' 'CONTRACT_ANCHOR_ENABLED')) {
     Write-Warn "blockchain anchoring enabled but not active (see: $LogsHint)"
   }
   if ($status.tts_enabled -eq $true) { Write-Ok 'text-to-speech enabled' }
@@ -766,7 +738,7 @@ function Show-StatusSummary([string]$Base, [string]$LogsHint) {
 function Invoke-SmokeTest([string]$Base) {
   Write-Step 'Smoke test: 1-round, 2-agent debate against the real LLM'
   $headers = @{}
-  $apiKey = Get-DotEnv 'API_KEY'
+  $apiKey = Get-Setting 'orchestrator' 'API_KEY'
   if ($apiKey) { $headers['X-API-Key'] = $apiKey }
   $body = @{
     query = 'Is it better to learn Python or JavaScript as a first programming language? Give a recommendation.'
@@ -811,7 +783,7 @@ function Invoke-SmokeTest([string]$Base) {
   $events = @(Invoke-Json -Uri "$Base/api/events/$runId" -TimeoutSec 10)
   Write-Ok "$($events.Count) provenance events recorded"
 
-  if (Test-True (Get-DotEnv 'CONTRACT_ANCHOR_ENABLED')) {
+  if (Test-True (Get-Setting 'orchestrator' 'CONTRACT_ANCHOR_ENABLED')) {
     $verify = $null
     try { $verify = Invoke-Json -Uri "$Base/api/verify/$runId" -TimeoutSec 30 } catch { }
     if ($verify -and $verify.verified -eq $true) {
@@ -885,11 +857,11 @@ function Invoke-Up {
   }
 
   Start-Infra
-  Invoke-EnsureContract 'up'
+  Invoke-ContractService
 
   Write-Step 'Starting orchestrator'
-  # llama and blockchain are already healthy; --no-deps keeps them untouched
-  # when the orchestrator is recreated to pick up a new contract address.
+  # Its dependencies have all run above; --no-deps keeps them untouched when
+  # the orchestrator is recreated to read a newly deployed contract address.
   $recreate = @()
   if ($script:ContractChanged) { $recreate = @('--force-recreate') }
   & docker compose up -d --no-build --no-deps --wait --wait-timeout 300 @recreate orchestrator
@@ -916,16 +888,24 @@ function Invoke-Dev {
 
   if ($script:Build) {
     Write-Step 'Building images'
-    if (-not (Invoke-ComposeBuild @('models', 'blockchain'))) { Stop-WithError 'docker compose build failed' }
+    # "contract" builds the orchestrator image, which the contract service runs.
+    if (-not (Invoke-ComposeBuild @('models', 'blockchain', 'contract'))) { Stop-WithError 'docker compose build failed' }
   }
 
   Start-Infra
-  Invoke-EnsureContract 'dev'
+  Invoke-ContractService
 
   Write-Step 'Starting local API and frontend (Ctrl+C stops both; containers keep running)'
-  Import-DotEnv
-  $env:LLM_BASE_URL = "http://127.0.0.1:$LlmPort"
-  $env:ETH_RPC_URL = "http://127.0.0.1:$RpcPort"
+  # Same environment the orchestrator container gets, with the container
+  # hostnames pointed at the published ports and the contract address passed
+  # directly (the anchor volume only exists inside Docker).
+  $containerEnv = Get-ServiceEnv 'orchestrator'
+  foreach ($key in $containerEnv.Keys) {
+    $value = $containerEnv[$key] -replace '//llama:8080', "//127.0.0.1:$LlmPort" -replace '//blockchain:8545', "//127.0.0.1:$RpcPort"
+    [Environment]::SetEnvironmentVariable($key, $value, 'Process')
+  }
+  [Environment]::SetEnvironmentVariable('ANCHOR_CONTRACT_ADDRESS_FILE', $null, 'Process')
+  [Environment]::SetEnvironmentVariable('ANCHOR_CONTRACT_ADDRESS', $script:ContractAddress, 'Process')
   $env:PYTHONPATH = $RootDir
   $env:PYTHONUNBUFFERED = '1'
   $env:PYTHONUTF8 = '1'

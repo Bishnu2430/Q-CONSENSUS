@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .contract_anchor import ContractAnchoringClient
+from .contract_anchor import ContractAnchoringClient, configured_contract_address
 from .debate import DebateOrchestrator
 from .events import JsonlEventStore
 from .llm_client import LlamaCppClient
@@ -236,7 +236,7 @@ def create_app() -> FastAPI:
         contract_client = None
         contract_init_error = str(exc)
         logger.warning("[STARTUP] contract anchor client unavailable: %s", contract_init_error)
-    anchor_contract_address = os.getenv("ANCHOR_CONTRACT_ADDRESS")
+    anchor_contract_address = configured_contract_address()
 
     agents_path = os.getenv("AGENTS_CONFIG_PATH", os.path.join("config", "agents.yaml"))
     agents = _load_agents_from_yaml(agents_path)
@@ -835,9 +835,9 @@ async function runDebateAsync() {
             "contract_anchor_enabled": bool(contract_client and anchor_contract_address),
             "contract_anchor_init_error": contract_init_error,
             "contract_anchor_address": anchor_contract_address,
-            # False here means ANCHOR_CONTRACT_ADDRESS points at a chain that no
+            # False here means the configured address points at a chain that no
             # longer has this contract (e.g. the geth data volume was reset) —
-            # anchoring will fail until scripts/deploy_contract.py is re-run.
+            # anchoring fails until the contract service redeploys it.
             "contract_deployed": contract_deployed,
             "contract_code_check_error": contract_code_check_error,
             "tts_enabled": tts_engine is not None,

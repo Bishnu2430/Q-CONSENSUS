@@ -3,6 +3,8 @@
 # Alpine build stage. Models are downloaded into a Docker volume at runtime.
 .git
 .venv
+.env
+.env.*
 .playwright-mcp
 models
 data
