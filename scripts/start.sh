@@ -660,6 +660,13 @@ run_checks() {
     if compose_running orchestrator; then
       if [[ "$AUTO_FIX" == 1 ]]; then
         docker compose stop orchestrator >/dev/null 2>&1
+        # Docker Desktop frees the published port a few seconds after the
+        # container stops (on Linux it's immediate).
+        local waited=0
+        while port_in_use "$API_PORT" && (( waited < 15 )); do
+          sleep 1
+          waited=$((waited + 1))
+        done
         ok "stopped the Docker orchestrator (dev mode runs the API locally)"
       else
         warn "Docker orchestrator is running on :$API_PORT (dev mode will stop it)"
@@ -936,7 +943,14 @@ cmd_dev() {
   ( "$DEV_PYTHON" -m uvicorn src.qconsensus.web:app --host 127.0.0.1 --port "$API_PORT" \
       --reload --reload-dir src --reload-dir config 2>&1 | sed -u "s/\r\$//; s/^/${C_BLUE}[api]${C_RESET} /" ) &
   pids+=("$!")
-  ( npm --prefix "$FRONTEND_DIR" run dev -- --port "$VITE_PORT" 2>&1 | sed -u "s/\r\$//; s/^/${C_YELLOW}[web]${C_RESET} /" ) &
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    # What "npm run dev" runs, started as a native process: the npm shell
+    # wrapper would detach vite from this job's Windows process tree, and
+    # kill_tree could then not stop it.
+    ( cd "$FRONTEND_DIR" && node node_modules/vite/bin/vite.js --port "$VITE_PORT" 2>&1 | sed -u "s/\r\$//; s/^/${C_YELLOW}[web]${C_RESET} /" ) &
+  else
+    ( npm --prefix "$FRONTEND_DIR" run dev -- --port "$VITE_PORT" 2>&1 | sed -u "s/\r\$//; s/^/${C_YELLOW}[web]${C_RESET} /" ) &
+  fi
   pids+=("$!")
 
   wait_http "local API" 180 "http://localhost:$API_PORT/api/status" || die "local API failed to start (see [api] output)"

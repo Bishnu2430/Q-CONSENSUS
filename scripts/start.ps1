@@ -630,6 +630,10 @@ function Invoke-Checks([string]$Mode) {
     if ($script:RunningServices -contains 'orchestrator') {
       if ($script:AutoFix) {
         $null = Invoke-Captured docker @('compose', 'stop', 'orchestrator')
+        # Docker Desktop frees the published port a few seconds after the
+        # container stops.
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while ((Get-PortOwner $ApiPort) -and $sw.Elapsed.TotalSeconds -lt 15) { Start-Sleep -Seconds 1 }
         Write-Ok 'stopped the Docker orchestrator (dev mode runs the API locally)'
       } else {
         Write-Warn "Docker orchestrator is running on :$ApiPort (dev mode will stop it)"
