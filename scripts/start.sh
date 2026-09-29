@@ -17,10 +17,18 @@
 #   --no-open    don't open the browser
 #   --dev        with "check": check dev-mode dependencies instead of Docker-mode ones
 #   -h, --help   show this help
+#
+# Runs on Linux and on Windows in Git Bash (with Docker Desktop);
+# scripts\start.cmd is the same launcher for PowerShell/cmd.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 VENV_PY_REL=".venv/Scripts/python.exe" ;;
+  *) IS_WINDOWS=0 VENV_PY_REL=".venv/bin/python" ;;
+esac
 
 FRONTEND_DIR="consensus-command-main"
 API_PORT=8000
@@ -29,6 +37,7 @@ RPC_PORT=8545
 VITE_PORT=5173
 MIN_RAM_GB=6
 MIN_DISK_GB=5
+MODELS_VOLUME="qconsensus_models"
 # Well-known account of the local geth dev chain (see blockchain/init-geth.sh).
 # It only ever holds test ether on this private chain.
 DEV_CHAIN_ADDRESS="0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
@@ -54,7 +63,7 @@ fail() { printf '  %s✘%s %s\n' "$C_RED" "$C_RESET" "$1"; FAILURES=$((FAILURES 
 hint() { printf '      %s↳ %s%s\n' "$C_YELLOW" "$1" "$C_RESET"; }
 die()  { printf '\n%s✘ %s%s\n' "$C_RED$C_BOLD" "$1" "$C_RESET" >&2; exit 1; }
 
-usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # ------------------------------------------------------------------- .env ---
 
@@ -105,6 +114,14 @@ export_dotenv() {
   done < .env
 }
 
+load_ports() {
+  # Host ports docker-compose.yml publishes (overridable in .env).
+  API_PORT="$(env_get API_PORT)"; API_PORT="${API_PORT:-8000}"
+  LLM_PORT="$(env_get LLM_PORT)"; LLM_PORT="${LLM_PORT:-8080}"
+  RPC_PORT="$(env_get RPC_PORT)"; RPC_PORT="${RPC_PORT:-8545}"
+  VITE_PORT="$(env_get VITE_PORT)"; VITE_PORT="${VITE_PORT:-5173}"
+}
+
 # -------------------------------------------------------------- utilities ---
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -114,9 +131,26 @@ version_ge() {
   [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]
 }
 
+win_listener_pid() {
+  # PID listening on a TCP port, from Windows netstat. A listening socket's
+  # foreign address is 0.0.0.0:0 / [::]:0, which (unlike the state column)
+  # isn't translated on non-English Windows.
+  netstat -ano 2>/dev/null | tr -d '\r' | awk -v port=":$1" '
+    $1 == "TCP" && ($3 == "0.0.0.0:0" || $3 == "[::]:0") &&
+    substr($2, length($2) - length(port) + 1) == port { print $5; exit }'
+}
+
+win_port_reserved() {
+  # True if Windows (Hyper-V/WinNAT) reserved the port: Docker can't bind it.
+  netsh interface ipv4 show excludedportrange protocol=tcp 2>/dev/null | tr -d '\r' |
+    awk -v port="$1" '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && port >= $1 && port <= $2 { found = 1 } END { exit !found }'
+}
+
 port_in_use() {
   local port="$1"
-  if have ss; then
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    [[ -n "$(win_listener_pid "$port")" ]]
+  elif have ss; then
     [[ -n "$(ss -Hltn "sport = :$port" 2>/dev/null)" ]]
   elif have lsof; then
     lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
@@ -126,8 +160,12 @@ port_in_use() {
 }
 
 port_owner() {
-  local port="$1"
-  if have ss; then
+  local port="$1" pid
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    pid="$(win_listener_pid "$port")"
+    [[ -n "$pid" ]] || return 0
+    printf '%s (PID %s)' "$(tasklist //FI "PID eq $pid" //FO CSV //NH 2>/dev/null | tr -d '\r' | cut -d'"' -f2)" "$pid"
+  elif have ss; then
     ss -Hltnp "sport = :$port" 2>/dev/null | grep -o 'users:(("[^"]*"' | head -n1 | sed 's/users:(("//; s/"$//'
   elif have lsof; then
     lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1}'
@@ -135,7 +173,15 @@ port_owner() {
 }
 
 kill_tree() {
-  local pid="$1" child
+  local pid="$1" child winpid
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    # Native Windows processes (python.exe, node.exe) don't get MSYS signals:
+    # end the whole Windows process tree under this background job instead.
+    winpid="$(cat "/proc/$pid/winpid" 2>/dev/null || true)"
+    [[ -n "$winpid" ]] && taskkill //F //T //PID "$winpid" >/dev/null 2>&1
+    kill "$pid" 2>/dev/null || true
+    return 0
+  fi
   for child in $(pgrep -P "$pid" 2>/dev/null); do
     kill_tree "$child"
   done
@@ -150,7 +196,9 @@ compose_running() {
 open_browser() {
   local url="$1"
   [[ "${OPEN_BROWSER}" == 1 ]] || return 0
-  if have xdg-open && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    cmd.exe //c start "" "$url" >/dev/null 2>&1 || true
+  elif have xdg-open && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
     xdg-open "$url" >/dev/null 2>&1 || true
   elif have open && [[ "$(uname -s)" == "Darwin" ]]; then
     open "$url" >/dev/null 2>&1 || true
@@ -192,28 +240,66 @@ show_failed_services() {
 
 # ---------------------------------------------------------------- checks ---
 
+start_docker_desktop() {
+  # Windows: launch Docker Desktop and wait up to 3 minutes for its engine.
+  local exe
+  for exe in "${ProgramFiles:-C:\\Program Files}\\Docker\\Docker\\Docker Desktop.exe" \
+             "${LOCALAPPDATA:-}\\Programs\\Docker\\Docker\\Docker Desktop.exe"; do
+    [[ -f "$(cygpath -u "$exe" 2>/dev/null)" ]] || continue
+    info "Docker Desktop is not running; starting it (this can take a minute)"
+    cmd.exe //c start "" "$exe" >/dev/null 2>&1 || true
+    local start=$SECONDS
+    while (( SECONDS - start < 180 )); do
+      sleep 3
+      docker info >/dev/null 2>&1 && return 0
+    done
+    return 1
+  done
+  return 1
+}
+
 check_docker() {
   if ! have docker; then
     fail "docker is not installed"
-    hint "Install Docker Engine: https://docs.docker.com/engine/install/"
+    if [[ "$IS_WINDOWS" == 1 ]]; then
+      hint "Install Docker Desktop: https://docs.docker.com/desktop/setup/install/windows-install/"
+    else
+      hint "Install Docker Engine: https://docs.docker.com/engine/install/"
+    fi
     return
   fi
   local err
   if ! err="$(docker info 2>&1 >/dev/null)"; then
-    if grep -qi "permission denied" <<<"$err"; then
+    if [[ "$IS_WINDOWS" == 1 ]]; then
+      if [[ "$AUTO_FIX" != 1 ]] || ! start_docker_desktop; then
+        fail "Docker Desktop is not running"
+        hint "Start Docker Desktop from the Start menu, wait for \"Engine running\", then re-run"
+        return
+      fi
+    elif grep -qi "permission denied" <<<"$err"; then
       fail "docker daemon is running but this user can't access it"
       hint "sudo usermod -aG docker \"$USER\"  (then log out and back in)"
+      return
     else
       fail "docker daemon is not running"
       hint "sudo systemctl start docker"
+      return
     fi
+  fi
+  if [[ "$(docker info --format '{{.OSType}}' 2>/dev/null)" != linux ]]; then
+    fail "Docker is in Windows-containers mode; this project needs Linux containers"
+    hint "Right-click the Docker tray icon -> \"Switch to Linux containers...\""
     return
   fi
   ok "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null)"
 
   if ! docker compose version >/dev/null 2>&1; then
     fail "docker compose v2 plugin is missing"
-    hint "Install the compose plugin: https://docs.docker.com/compose/install/linux/"
+    if [[ "$IS_WINDOWS" == 1 ]]; then
+      hint "Update Docker Desktop (it bundles Compose v2)"
+    else
+      hint "Install the compose plugin: https://docs.docker.com/compose/install/linux/"
+    fi
     return
   fi
   local compose_version
@@ -251,33 +337,27 @@ check_env_file() {
 }
 
 check_model() {
+  # The model isn't in the repo: the "models" service downloads it once into
+  # a Docker volume (see docker/models/fetch-models.sh).
   local model_file
   model_file="$(env_get LLAMA_MODEL_FILE)"
-  if [[ -z "$model_file" ]]; then
-    fail "LLAMA_MODEL_FILE is not set in .env"
-    return
+  model_file="${model_file:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
+  if docker volume inspect "$MODELS_VOLUME" >/dev/null 2>&1; then
+    ok "model volume $MODELS_VOLUME exists ($model_file is checked on start)"
+  else
+    info "LLM model $model_file will be downloaded into Docker volume $MODELS_VOLUME on first start (one time, ~2 GB)"
   fi
-  local path="models/$model_file"
-  if [[ ! -f "$path" ]]; then
-    fail "model file not found: $path"
-    hint "Place a GGUF model in models/ and set LLAMA_MODEL_FILE in .env"
-    return
-  fi
-  if head -c 64 "$path" | grep -q "git-lfs"; then
-    fail "$path is a Git LFS pointer, not the real model"
-    hint "git lfs install && git lfs pull"
-    return
-  fi
-  if [[ "$(head -c 4 "$path")" != "GGUF" ]]; then
-    fail "$path is not a GGUF model file"
-    return
-  fi
-  ok "LLM model $model_file ($(du -h "$path" | cut -f1))"
 }
 
 check_port() {
   # check_port <port> <compose-service-or-empty> <label>
-  local port="$1" service="$2" label="$3"
+  local port="$1" service="$2" label="$3" key="${4:-}"
+  if [[ "$IS_WINDOWS" == 1 ]] && win_port_reserved "$port"; then
+    fail "port $port ($label) is reserved by Windows (Hyper-V/WinNAT excluded port range)"
+    [[ -n "$key" ]] && hint "Use another port: set $key=<port> in .env"
+    hint "Or clear the reservation from an admin terminal: net stop winnat && net start winnat"
+    return
+  fi
   if ! port_in_use "$port"; then
     ok "port $port free ($label)"
     return
@@ -292,12 +372,38 @@ check_port() {
   if [[ -n "$service" ]] && docker compose ps -a --services 2>/dev/null | grep -qx "$service"; then
     hint "If it's this project's stack in a bad state: scripts/start.sh stop"
   fi
-  hint "Find the process: ss -ltnp 'sport = :$port'  (or: lsof -iTCP:$port -sTCP:LISTEN)"
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    hint "Stop that program${key:+, or set $key=<port> in .env}"
+  else
+    hint "Find the process: ss -ltnp 'sport = :$port'  (or: lsof -iTCP:$port -sTCP:LISTEN)"
+  fi
+}
+
+docker_desktop_data_dir() {
+  # Windows: folder holding Docker Desktop's virtual disk (images + volumes).
+  local settings dir=""
+  for settings in "$APPDATA/Docker/settings-store.json" "$APPDATA/Docker/settings.json"; do
+    [[ -f "$settings" ]] || continue
+    dir="$(grep -oE '"(CustomWslDistroDir|DataFolder)"[[:space:]]*:[[:space:]]*"[^"]+"' "$settings" | head -n1 | sed -E 's/.*:[[:space:]]*"(.*)"/\1/; s/\\\\/\\/g')"
+    [[ -n "$dir" ]] && break
+  done
+  cygpath -u "${dir:-$LOCALAPPDATA\\Docker}"
 }
 
 check_resources() {
   local ram_kb=""
-  if [[ -r /proc/meminfo ]]; then
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    # Containers only get the Docker Desktop VM's memory, not all host RAM.
+    ram_kb="$(( $(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0) / 1024 ))"
+    if (( ram_kb > 0 && ram_kb / 1024 / 1024 < MIN_RAM_GB )); then
+      warn "Docker can use only $(( ram_kb / 1024 / 1024 ))GB of memory; the 3B model plus Qiskit need about ${MIN_RAM_GB}GB"
+      hint "WSL 2 backend: add memory=8GB under [wsl2] in %UserProfile%\\.wslconfig, then run: wsl --shutdown"
+      ram_kb=""
+    elif (( ram_kb > 0 )); then
+      ok "Docker can use $(( ram_kb / 1024 / 1024 ))GB of memory"
+      ram_kb=""
+    fi
+  elif [[ -r /proc/meminfo ]]; then
     ram_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
   elif have sysctl; then
     ram_kb="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 ))"
@@ -312,7 +418,11 @@ check_resources() {
   fi
 
   local docker_root disk_kb
-  docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    docker_root="$(docker_desktop_data_dir)"
+  else
+    docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  fi
   disk_kb="$(df -Pk "${docker_root:-$ROOT_DIR}" 2>/dev/null | awk 'NR==2 {print $4}')"
   if [[ -z "$disk_kb" ]]; then
     disk_kb="$(df -Pk "$ROOT_DIR" | awk 'NR==2 {print $4}')"
@@ -332,8 +442,13 @@ check_data_dir() {
     rm -f "$probe"
     ok "data/ is writable"
   else
-    fail "data/ is not writable by $(id -un) (probably created by an old root container)"
-    hint "sudo chown -R $(id -u):$(id -g) data"
+    if [[ "$IS_WINDOWS" == 1 ]]; then
+      fail "data/ is not writable"
+      hint "Check the folder permissions (and Controlled Folder Access in Windows Security)"
+    else
+      fail "data/ is not writable by $(id -un) (probably created by an old root container)"
+      hint "sudo chown -R $(id -u):$(id -g) data"
+    fi
   fi
 }
 
@@ -341,8 +456,15 @@ check_container_user() {
   # The orchestrator runs as APP_UID:APP_GID so files it writes to ./data stay
   # owned by you. Default to the current user unless .env pins other ids.
   local uid gid env_uid env_gid
-  uid="$(id -u)" gid="$(id -g)"
   env_uid="$(env_get APP_UID)" env_gid="$(env_get APP_GID)"
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    # Docker Desktop doesn't map ownership of Windows folders, and Git Bash's
+    # id -u (e.g. 197609) is not a Linux uid: keep the image defaults.
+    export APP_UID="${env_uid:-1000}" APP_GID="${env_gid:-1000}"
+    ok "container user $APP_UID:$APP_GID (ownership of data/ doesn't matter on Docker Desktop)"
+    return
+  fi
+  uid="$(id -u)" gid="$(id -g)"
   export APP_UID="${env_uid:-$uid}" APP_GID="${env_gid:-$gid}"
   if [[ "$APP_UID" != "$uid" || "$APP_GID" != "$gid" ]]; then
     warn "APP_UID/APP_GID in .env ($APP_UID:$APP_GID) differ from your user ($uid:$gid)"
@@ -352,12 +474,23 @@ check_container_user() {
   fi
 }
 
+venv_python() {
+  # The project venv's interpreter: bin/python on Linux, Scripts/python.exe on Windows.
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    printf '%s' "$ROOT_DIR/.venv/Scripts/python.exe"
+  else
+    printf '%s' "$ROOT_DIR/.venv/bin/python"
+  fi
+}
+
 find_python() {
   # Prints a python that can run the host-side helpers. Uses "python -m" style
   # invocations only: venv console-script shebangs break when the drive's mount
   # path changes.
   local candidate
-  for candidate in "$ROOT_DIR/.venv/bin/python" python3; do
+  # On Windows, python3 is usually the Microsoft Store stub, which fails the
+  # version probe below and is skipped.
+  for candidate in "$(venv_python)" python3 python; do
     if "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
       printf '%s' "$candidate"
       return 0
@@ -366,17 +499,10 @@ find_python() {
   return 1
 }
 
-python_install_hint() {
-  local py="$1"
-  shift
-  if have uv; then
-    hint "uv pip install --python \"$py\" $*"
-  else
-    hint "\"$py\" -m pip install $*"
-  fi
-}
-
 check_anchoring() {
+  # Deploy tooling needs no host check: "up" deploys from the orchestrator
+  # image (web3 + a pre-fetched solc) and "dev" from the .venv, whose
+  # packages check_dev_python verifies.
   if ! is_true "$(env_get CONTRACT_ANCHOR_ENABLED)"; then
     info "blockchain anchoring disabled (CONTRACT_ANCHOR_ENABLED=false)"
     return
@@ -393,27 +519,15 @@ check_anchoring() {
   else
     ok "anchoring account configured"
   fi
-
-  local py
-  if ! py="$(find_python)"; then
-    fail "python >= 3.9 is required to deploy the anchor contract"
-    hint "uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -r requirements.txt py-solc-x"
-    return
-  fi
-  if "$py" -c 'import web3, solcx' >/dev/null 2>&1; then
-    ok "contract deploy tooling (web3, py-solc-x) via $py"
-    DEPLOY_PYTHON="$py"
-  elif [[ -n "$(env_get ANCHOR_CONTRACT_ADDRESS)" ]]; then
-    warn "web3/py-solc-x missing: fine while the deployed contract exists, but a chain reset can't be redeployed"
-    python_install_hint "$py" web3 py-solc-x
-  else
-    fail "web3 and py-solc-x are needed to deploy the anchor contract"
-    python_install_hint "$py" web3 py-solc-x
-  fi
 }
 
 check_tts() {
+  local mode="$1"
   if ! is_true "$(env_get TTS_ENABLED)"; then
+    return
+  fi
+  if [[ "$mode" == up ]]; then
+    ok "TTS enabled (the models service downloads the voice into the models volume)"
     return
   fi
   local voice
@@ -423,32 +537,51 @@ check_tts() {
     ok "TTS voice model $(basename "$voice")"
   else
     warn "TTS_ENABLED=true but $voice is missing (TTS will be disabled)"
-    hint ".venv/bin/python scripts/download_tts_voice.py"
+    hint "${VENV_PY_REL} scripts/download_tts_voice.py"
   fi
 }
 
 check_dev_python() {
-  local py="$ROOT_DIR/.venv/bin/python"
-  local imports='import fastapi, uvicorn, requests, httpx, psutil, web3, pydantic, qiskit, qiskit_aer, numpy, scipy, yaml'
-  if [[ -x "$py" ]] && ! "$py" -c 'pass' >/dev/null 2>&1; then
+  local py
+  py="$(venv_python)"
+  local imports='import fastapi, uvicorn, requests, httpx, psutil, web3, pydantic, qiskit, qiskit_aer, numpy, scipy, yaml, solcx'
+  local setup_hint="uv venv --clear --python 3.11 .venv && uv pip install --python ${VENV_PY_REL} -r requirements.txt"
+  # A venv made on the other OS (bin/ vs Scripts/) can't be used or repaired.
+  local foreign=0
+  if [[ -d .venv && ! -e "$py" ]] && [[ -d .venv/bin || -d .venv/Scripts ]]; then
+    foreign=1
+  fi
+  if [[ "$foreign" == 0 && -x "$py" ]] && ! "$py" -c 'pass' >/dev/null 2>&1; then
     fail ".venv is broken (its interpreter no longer exists)"
-    hint "rm -rf .venv && uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -r requirements.txt"
+    hint "rm -rf .venv && uv venv --python 3.11 .venv && uv pip install --python ${VENV_PY_REL} -r requirements.txt"
     return
   fi
   if [[ -x "$py" ]] && "$py" -c "$imports" >/dev/null 2>&1; then
-    ok "python backend deps in .venv ($("$py" -c 'import platform; print(platform.python_version())'))"
+    ok "python backend deps in .venv ($("$py" -c 'import platform; print(platform.python_version())' | tr -d '\r'))"
     DEV_PYTHON="$py"
     return
   fi
   if [[ "$AUTO_FIX" != 1 ]]; then
-    fail "python backend dependencies are not installed in .venv"
-    hint "uv venv --python 3.11 .venv && uv pip install --python .venv/bin/python -r requirements.txt"
+    if [[ "$foreign" == 1 ]]; then
+      fail ".venv was created on another OS and does not work here"
+    else
+      fail "python backend dependencies are not installed in .venv"
+    fi
+    hint "$setup_hint"
     return
   fi
   if ! have uv; then
     fail "python backend dependencies are missing and uv is not installed to install them"
-    hint "curl -LsSf https://astral.sh/uv/install.sh | sh   (then re-run this script)"
+    if [[ "$IS_WINDOWS" == 1 ]]; then
+      hint "powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\"   (then open a new terminal)"
+    else
+      hint "curl -LsSf https://astral.sh/uv/install.sh | sh   (then re-run this script)"
+    fi
     return
+  fi
+  if [[ "$foreign" == 1 ]]; then
+    info ".venv was created on another OS; recreating it"
+    uv venv --clear --python 3.11 .venv
   fi
   info "installing python backend dependencies into .venv (one-time) ..."
   [[ -x "$py" ]] || uv venv --python 3.11 .venv
@@ -458,6 +591,12 @@ check_dev_python() {
   else
     fail "installing python dependencies failed (see output above)"
   fi
+}
+
+frontend_deps_ok() {
+  [[ -d "$FRONTEND_DIR/node_modules" ]] &&
+    npm --prefix "$FRONTEND_DIR" ls --depth=0 >/dev/null 2>&1 &&
+    (cd "$FRONTEND_DIR" && node -e "require('rollup');require('@swc/core');require('esbuild').transformSync('')" >/dev/null 2>&1)
 }
 
 check_dev_node() {
@@ -474,18 +613,20 @@ check_dev_node() {
   fi
   ok "node $node_version"
 
-  # npm ls exits non-zero when anything in package.json is missing or mismatched.
-  if [[ -d "$FRONTEND_DIR/node_modules" ]] && npm --prefix "$FRONTEND_DIR" ls --depth=0 >/dev/null 2>&1; then
+  # npm ls exits non-zero when anything in package.json is missing or mismatched;
+  # the require() probe catches native binaries (esbuild/rollup/swc) installed
+  # on another OS, e.g. a node_modules copied over from Linux.
+  if frontend_deps_ok; then
     ok "frontend node_modules up to date"
     return
   fi
   if [[ "$AUTO_FIX" != 1 ]]; then
-    fail "frontend dependencies are missing or out of date"
+    fail "frontend dependencies are missing, out of date, or built for another OS"
     hint "npm --prefix $FRONTEND_DIR ci"
     return
   fi
   info "installing frontend dependencies (npm ci) ..."
-  if npm --prefix "$FRONTEND_DIR" ci --no-audit --no-fund; then
+  if npm --prefix "$FRONTEND_DIR" ci --no-audit --no-fund && frontend_deps_ok; then
     ok "frontend dependencies installed"
   else
     fail "npm ci failed (see output above)"
@@ -504,30 +645,38 @@ run_checks() {
 
   step "Checking configuration"
   check_env_file
+  load_ports
   check_model
   check_data_dir
   check_anchoring
-  check_tts
+  check_tts "$mode"
 
   step "Checking host"
   check_resources
   if [[ "$mode" == up ]]; then
     check_container_user
-    check_port "$API_PORT" orchestrator "orchestrator API + UI"
+    check_port "$API_PORT" orchestrator "orchestrator API + UI" API_PORT
   else
     if compose_running orchestrator; then
       if [[ "$AUTO_FIX" == 1 ]]; then
         docker compose stop orchestrator >/dev/null 2>&1
+        # Docker Desktop frees the published port a few seconds after the
+        # container stops (on Linux it's immediate).
+        local waited=0
+        while port_in_use "$API_PORT" && (( waited < 15 )); do
+          sleep 1
+          waited=$((waited + 1))
+        done
         ok "stopped the Docker orchestrator (dev mode runs the API locally)"
       else
         warn "Docker orchestrator is running on :$API_PORT (dev mode will stop it)"
       fi
     fi
-    check_port "$API_PORT" "" "local API"
-    check_port "$VITE_PORT" "" "Vite dev server"
+    check_port "$API_PORT" "" "local API" API_PORT
+    check_port "$VITE_PORT" "" "Vite dev server" VITE_PORT
   fi
-  check_port "$LLM_PORT" llama "llama.cpp server"
-  check_port "$RPC_PORT" blockchain "blockchain RPC"
+  check_port "$LLM_PORT" llama "llama.cpp server" LLM_PORT
+  check_port "$RPC_PORT" blockchain "blockchain RPC" RPC_PORT
 
   if [[ "$mode" == dev ]]; then
     step "Checking local dev toolchain"
@@ -558,7 +707,7 @@ compose_build() {
       rm -f "$log"
       return 0
     fi
-    if grep -qiE 'registry-1\.docker\.io|server misbehaving|temporary failure in name resolution|lookup .*:53|TLS handshake timeout' "$log"; then
+    if grep -qiE 'registry-1\.docker\.io|server misbehaving|temporary failure in name resolution|no such host|lookup .*:53|TLS handshake timeout|i/o timeout' "$log"; then
       warn "registry/DNS lookup failed (attempt $attempt/4), retrying in ${delay}s"
       sleep "$delay"
       delay=$((delay * 2))
@@ -573,7 +722,24 @@ compose_build() {
   return 1
 }
 
+fetch_models() {
+  # The "models" service downloads the GGUF model (and the Piper voice when
+  # TTS_ENABLED=true) into a Docker volume once; run in the foreground here
+  # so the download progress is visible.
+  step "Preparing models"
+  local model_file flags=(--rm)
+  model_file="$(env_get LLAMA_MODEL_FILE)"
+  model_file="${model_file:-Qwen2.5-3B-Instruct-Q4_K_M.gguf}"
+  info "$model_file lives in Docker volume $MODELS_VOLUME (downloaded once, resumable)"
+  [[ "$BUILD" == 1 ]] && flags+=(--build)
+  # docker.exe can't use Git Bash's terminal as a TTY.
+  [[ "$IS_WINDOWS" == 1 || ! -t 1 ]] && flags+=(-T)
+  docker compose run "${flags[@]}" models || die "model download failed; re-run to resume it (see output above)"
+  ok "model ready: $model_file"
+}
+
 start_infra() {
+  fetch_models
   step "Starting llama.cpp server and blockchain"
   info "first start loads the model into memory; this can take a minute"
   local build_flag=--build
@@ -587,7 +753,9 @@ start_infra() {
 }
 
 ensure_contract() {
+  # ensure_contract <up|dev>
   # Sets CONTRACT_CHANGED=1 when a new contract address was written to .env.
+  local mode="$1"
   CONTRACT_CHANGED=0
   is_true "$(env_get CONTRACT_ANCHOR_ENABLED)" || return 0
 
@@ -603,19 +771,24 @@ ensure_contract() {
     warn "no contract code at $address (chain was reset); redeploying"
   fi
 
-  if [[ -z "${DEPLOY_PYTHON:-}" ]]; then
-    die "cannot deploy the anchor contract: web3/py-solc-x are not installed (see checks above)"
-  fi
-
-  local key output new_address
+  local key output new_address status=0
   key="$(env_get ETH_PRIVATE_KEY)"
-  info "deploying RunCommitmentAnchor (first run downloads solc 0.8.17) ..."
-  if ! output="$(ETH_RPC_URL="http://localhost:$RPC_PORT" ETH_PRIVATE_KEY="${key:-$DEV_CHAIN_PRIVATE_KEY}" \
-      "$DEPLOY_PYTHON" scripts/deploy_contract.py 2>&1)"; then
+  if [[ "$mode" == up ]]; then
+    # From the orchestrator image (web3 + a pre-fetched solc): no host Python needed.
+    info "deploying RunCommitmentAnchor ..."
+    output="$(docker compose run --rm --no-deps -T -e ETH_RPC_URL=http://blockchain:8545 \
+      -e ETH_PRIVATE_KEY="${key:-$DEV_CHAIN_PRIVATE_KEY}" orchestrator python scripts/deploy_contract.py 2>&1)" || status=$?
+  else
+    [[ -n "${DEV_PYTHON:-}" ]] || die "cannot deploy the anchor contract: the .venv is not set up (see checks above)"
+    info "deploying RunCommitmentAnchor (first run downloads solc 0.8.17) ..."
+    output="$(ETH_RPC_URL="http://localhost:$RPC_PORT" ETH_PRIVATE_KEY="${key:-$DEV_CHAIN_PRIVATE_KEY}" \
+      "$DEV_PYTHON" scripts/deploy_contract.py 2>&1)" || status=$?
+  fi
+  if (( status != 0 )); then
     printf '%s\n' "$output"
     die "anchor contract deployment failed"
   fi
-  new_address="$(awk -F= '/^ANCHOR_CONTRACT_ADDRESS=/ {print $2}' <<<"$output" | tail -n1)"
+  new_address="$(tr -d '\r' <<<"$output" | awk -F= '/^ANCHOR_CONTRACT_ADDRESS=/ {print $2}' | tail -n1)"
   [[ -n "$new_address" ]] || { printf '%s\n' "$output"; die "could not parse the deployed contract address"; }
   env_set ANCHOR_CONTRACT_ADDRESS "$new_address"
   CONTRACT_CHANGED=1
@@ -641,10 +814,26 @@ print_status_summary() {
   return 0
 }
 
+json_eval() {
+  # json_eval <python-expr>: evaluates the expression with the JSON from stdin as d.
+  # Output is decoded as UTF-8 and stripped of Windows CRs.
+  PYTHONIOENCODING=utf-8 "${JSON_PY[@]}" -c "import json,sys; d=json.load(sys.stdin); print($1)" | tr -d '\r'
+}
+
 smoke_test() {
   local base="$1"
   step "Smoke test: 1-round, 2-agent debate against the real LLM"
-  have python3 || { warn "python3 not found; skipping smoke test"; return 0; }
+  # Any working host python reads the API's JSON; without one (Windows with
+  # Docker only) the orchestrator container's python does it.
+  local py
+  if py="$(find_python)"; then
+    JSON_PY=("$py")
+  elif compose_running orchestrator; then
+    JSON_PY=(docker compose exec -T orchestrator python)
+  else
+    warn "no python found to read the API responses; skipping smoke test"
+    return 0
+  fi
 
   local api_key auth=()
   api_key="$(env_get API_KEY)"
@@ -654,14 +843,14 @@ smoke_test() {
   run_id="$(curl -fsS --max-time 30 -X POST "$base/api/run_async" ${auth[@]+"${auth[@]}"} \
       -H 'Content-Type: application/json' \
       -d '{"query":"Is it better to learn Python or JavaScript as a first programming language? Give a recommendation.","max_rounds":1,"agent_count":2}' \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')" \
+    | json_eval 'd["run_id"]')" \
     || die "could not start a smoke-test run"
   info "run $run_id started"
 
   local result="" status="" start=$SECONDS
   while (( SECONDS - start < 600 )); do
     result="$(curl -fsS --max-time 10 "$base/api/result/$run_id" 2>/dev/null || true)"
-    status="$(printf '%s' "$result" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)"
+    status="$(printf '%s' "$result" | json_eval 'd.get("status","")' 2>/dev/null || true)"
     [[ "$status" == completed || "$status" == failed ]] && break
     sleep 5
   done
@@ -673,7 +862,7 @@ smoke_test() {
   fi
 
   local answer
-  answer="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("final_answer") or "")' <<<"$result")"
+  answer="$(json_eval 'd.get("final_answer") or ""' <<<"$result")"
   if [[ -z "${answer//[[:space:]]/}" ]]; then
     die "smoke run completed with an empty final answer"
   fi
@@ -684,7 +873,7 @@ smoke_test() {
   printf '%s\n' "$answer" | head -n 6 | sed 's/^/      /'
 
   local events
-  events="$(curl -fsS --max-time 10 "$base/api/events/$run_id" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+  events="$(curl -fsS --max-time 10 "$base/api/events/$run_id" | json_eval 'len(d)')"
   ok "$events provenance events recorded"
 
   if is_true "$(env_get CONTRACT_ANCHOR_ENABLED)"; then
@@ -708,7 +897,7 @@ cmd_up() {
   fi
 
   start_infra
-  ensure_contract
+  ensure_contract up
 
   step "Starting orchestrator"
   local recreate=()
@@ -732,7 +921,7 @@ cmd_dev() {
   finish_checks
 
   start_infra
-  ensure_contract
+  ensure_contract dev
 
   step "Starting local API and frontend (Ctrl+C stops both; containers keep running)"
   export_dotenv
@@ -740,14 +929,28 @@ cmd_dev() {
   export ETH_RPC_URL="http://localhost:$RPC_PORT"
   export PYTHONPATH="$ROOT_DIR"
   unset FRONTEND_DIST_DIR
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    # Native Windows python needs a Windows path, unbuffered output for the
+    # [api] stream, and UTF-8 regardless of the console code page.
+    PYTHONPATH="$(cygpath -w "$ROOT_DIR")"
+    export PYTHONUNBUFFERED=1 PYTHONUTF8=1
+    export VITE_API_PROXY_TARGET="http://127.0.0.1:$API_PORT"
+  fi
 
   local pids=()
   trap 'trap - INT TERM EXIT; printf "\nStopping local API and frontend...\n"; for p in "${pids[@]}"; do kill_tree "$p"; done' INT TERM EXIT
 
   ( "$DEV_PYTHON" -m uvicorn src.qconsensus.web:app --host 127.0.0.1 --port "$API_PORT" \
-      --reload --reload-dir src --reload-dir config 2>&1 | sed -u "s/^/${C_BLUE}[api]${C_RESET} /" ) &
+      --reload --reload-dir src --reload-dir config 2>&1 | sed -u "s/\r\$//; s/^/${C_BLUE}[api]${C_RESET} /" ) &
   pids+=("$!")
-  ( npm --prefix "$FRONTEND_DIR" run dev -- --port "$VITE_PORT" 2>&1 | sed -u "s/^/${C_YELLOW}[web]${C_RESET} /" ) &
+  if [[ "$IS_WINDOWS" == 1 ]]; then
+    # What "npm run dev" runs, started as a native process: the npm shell
+    # wrapper would detach vite from this job's Windows process tree, and
+    # kill_tree could then not stop it.
+    ( cd "$FRONTEND_DIR" && node node_modules/vite/bin/vite.js --port "$VITE_PORT" 2>&1 | sed -u "s/\r\$//; s/^/${C_YELLOW}[web]${C_RESET} /" ) &
+  else
+    ( npm --prefix "$FRONTEND_DIR" run dev -- --port "$VITE_PORT" 2>&1 | sed -u "s/\r\$//; s/^/${C_YELLOW}[web]${C_RESET} /" ) &
+  fi
   pids+=("$!")
 
   wait_http "local API" 180 "http://localhost:$API_PORT/api/status" || die "local API failed to start (see [api] output)"
@@ -772,6 +975,7 @@ cmd_check() {
 
 cmd_status() {
   have docker && docker info >/dev/null 2>&1 || die "docker daemon is not reachable"
+  load_ports
   step "Containers"
   docker compose ps -a
   step "Endpoints"
@@ -792,8 +996,8 @@ BUILD=1
 OPEN_BROWSER=1
 CHECK_DEV=0
 AUTO_FIX=1
-DEPLOY_PYTHON=""
 DEV_PYTHON=""
+JSON_PY=()
 CONTRACT_CHANGED=0
 LOG_ARGS=()
 

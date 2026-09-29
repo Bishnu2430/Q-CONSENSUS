@@ -24,9 +24,13 @@ Thumbs.db
 # Runtime data
 data/
 
-# Downloaded TTS voice models (fetched via scripts/download_tts_voice.py,
-# not committed -- ~75MB+ per voice, unlike the LFS-tracked LLM model)
-models/tts/
+# Model files never live in the repo: the GGUF model is downloaded into a
+# Docker volume, and dev mode's Piper voice goes to models/tts/ via
+# scripts/download_tts_voice.py.
+/models/
+
+# Local Python environment (dev mode)
+.venv/
 
 # Test caches
 .pytest_cache/

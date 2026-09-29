@@ -3,9 +3,8 @@
 # anchoring. Idempotent: safe to run against an already-initialized
 # datadir (e.g. the gethdata volume surviving a container restart).
 #
-# This is bind-mounted into the container at /usr/local/bin/init-geth.sh
-# by docker-compose.yml, so editing this file takes effect on the next
-# container start without rebuilding the image.
+# Baked into the image by geth.Dockerfile: rebuild (scripts\start.cmd does)
+# after editing it.
 set -u
 
 GETH_HOME="${GETH_HOME:-/data}"

@@ -24,6 +24,16 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
+# Pre-fetch the Solidity compiler used by scripts/deploy_contract.py, so the
+# launcher can deploy the anchor contract from this image (no Python needed
+# on the host, and no download at deploy time).
+ENV SOLCX_BINARY_PATH=/opt/solcx
+RUN mkdir -p "$SOLCX_BINARY_PATH" \
+    && python -c "import solcx; solcx.install_solc('0.8.17')" \
+    && chmod -R a+rx "$SOLCX_BINARY_PATH" \
+    && rm -f /tmp/.solcx-lock-*
+
+COPY scripts/deploy_contract.py ./scripts/
 COPY src ./src
 COPY config ./config
 COPY --from=frontend-build /frontend/dist ./frontend-dist

@@ -45,7 +45,8 @@ class TTSEngine:
         if not os.path.exists(model_path):
             logger.warning(
                 "[TTS] TTS_ENABLED=true but voice model not found at %s -- "
-                "run scripts/download_tts_voice.py first. TTS disabled.",
+                "restart the Docker stack (its models service downloads it) or, in dev "
+                "mode, run scripts/download_tts_voice.py. TTS disabled.",
                 model_path,
             )
             return None
