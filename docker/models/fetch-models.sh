@@ -30,11 +30,12 @@ fetch() {
   fi
   mkdir -p "$(dirname "$dest")"
   part="$dest.part"
-  if [ -t 2 ]; then progress=--progress-bar; else progress=--no-progress-meter; fi
   echo "downloading ${dest#"$MODELS_DIR"/} from $url"
   [ -s "$part" ] && echo "resuming a previous partial download"
   # -C - resumes a .part file left behind by an interrupted earlier attempt.
-  curl -fL --retry 5 --retry-delay 5 --retry-all-errors -C - "$progress" -o "$part" "$url"
+  # The progress bar is shown even without a TTY: the launchers run this with
+  # "docker compose run -T" (Git Bash can't give docker.exe a TTY).
+  curl -fL --retry 5 --retry-delay 5 --retry-all-errors -C - --progress-bar -o "$part" "$url"
   if [ -n "$sha" ]; then
     echo "verifying sha256"
     actual="$(sha256sum "$part" | cut -d' ' -f1)"

@@ -10,11 +10,7 @@ real ContractAnchoringClient methods against controlled fake RPC responses.
 from web3 import Web3
 from web3.exceptions import ContractLogicError
 
-from src.qconsensus.contract_anchor import (
-    AnchorContractConfig,
-    ContractAnchoringClient,
-    configured_contract_address,
-)
+from src.qconsensus.contract_anchor import AnchorContractConfig, ContractAnchoringClient
 
 _ABI = [
     {
@@ -196,27 +192,3 @@ def test_anchor_commitment_strips_0x_prefix_but_not_leading_zero_digits():
         raise AssertionError("0x-prefixed commitment hex parsing was corrupted")
     except RuntimeError as exc:
         assert "No contract deployed" in str(exc)
-
-
-def test_contract_address_from_env_wins_over_file(tmp_path, monkeypatch):
-    address_file = tmp_path / "contract-address"
-    address_file.write_text("0x" + "22" * 20 + "\n", encoding="utf-8")
-    monkeypatch.setenv("ANCHOR_CONTRACT_ADDRESS_FILE", str(address_file))
-    monkeypatch.setenv("ANCHOR_CONTRACT_ADDRESS", _TEST_ADDRESS)
-    assert configured_contract_address() == _TEST_ADDRESS
-
-
-def test_contract_address_falls_back_to_file_written_by_contract_service(tmp_path, monkeypatch):
-    address_file = tmp_path / "contract-address"
-    address_file.write_text("0x" + "22" * 20 + "\n", encoding="utf-8")
-    monkeypatch.setenv("ANCHOR_CONTRACT_ADDRESS", "")  # compose blanks it so a stale .env can't win
-    monkeypatch.setenv("ANCHOR_CONTRACT_ADDRESS_FILE", str(address_file))
-    assert configured_contract_address() == "0x" + "22" * 20
-
-
-def test_contract_address_missing_file_means_not_configured(tmp_path, monkeypatch):
-    monkeypatch.delenv("ANCHOR_CONTRACT_ADDRESS", raising=False)
-    monkeypatch.setenv("ANCHOR_CONTRACT_ADDRESS_FILE", str(tmp_path / "not-deployed-yet"))
-    assert configured_contract_address() is None
-    monkeypatch.delenv("ANCHOR_CONTRACT_ADDRESS_FILE")
-    assert configured_contract_address() is None

@@ -1,51 +1,29 @@
-# Start with scripts\start.cmd: it checks prerequisites, shows download and
-# deploy progress, and waits for every service to be healthy. Plain
-# "docker compose up" works too.
-#
-# How the containers reach each other is defined here, not in .env: the values
-# under "environment:" override anything .env sets. .env is optional and only
-# holds settings (see .env.example).
+# Start with scripts/start.sh (Git Bash/Linux) or scripts\start.cmd: they check
+# prerequisites, download the model, deploy the anchor contract and wait for
+# every service to be healthy.
 name: qconsensus
-
-x-app-build: &app-build
-  context: .
-  dockerfile: Dockerfile
-
-x-chain-env: &chain-env
-  CONTRACT_ANCHOR_ENABLED: ${CONTRACT_ANCHOR_ENABLED:-true}
-  ETH_RPC_URL: http://blockchain:8545
-  ETH_CHAIN_ID: "1337"
-  # Well-known signer account of the local dev chain (blockchain/genesis.json);
-  # it only ever holds test ether on this private chain.
-  ETH_FROM_ADDRESS: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
-  ETH_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-  # The contract service saves the deployed address here. The plain variable
-  # is blanked so a leftover value in an old .env can't point elsewhere.
-  ANCHOR_CONTRACT_ADDRESS_FILE: /anchor/contract-address
-  ANCHOR_CONTRACT_ADDRESS: ""
 
 services:
   orchestrator:
-    build: *app-build
-    image: qconsensus-orchestrator
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     container_name: qconsensus-orchestrator
     env_file:
-      - path: .env
-        required: false
-    environment:
-      <<: *chain-env
-      LLM_BASE_URL: http://llama:8080
+      - .env
     depends_on:
       llama:
         condition: service_healthy
-      contract:
-        condition: service_completed_successfully
+      blockchain:
+        condition: service_healthy
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
-      - anchor:/anchor:ro
       # Only the optional Piper voice (models/tts/) is read from here; the
       # models service downloads it when TTS_ENABLED=true.
       - models:/app/models:ro
@@ -55,20 +33,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
-
-  # One-shot: deploys the anchor contract (same image as the orchestrator)
-  # and saves its address in the anchor volume. A no-op while the chain still
-  # has that contract; redeploys after a chain reset.
-  contract:
-    build: *app-build
-    image: qconsensus-orchestrator
-    command: ["python", "scripts/deploy_contract.py"]
-    environment: *chain-env
-    depends_on:
-      blockchain:
-        condition: service_healthy
-    volumes:
-      - anchor:/anchor
 
   # One-shot: downloads the GGUF model (and Piper voice) into the models
   # volume, then exits. A no-op when the files are already there.
@@ -139,4 +103,3 @@ services:
 volumes:
   models:
   gethdata:
-  anchor:
